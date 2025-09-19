@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Endless Runner — 2D Subway Surfers Style</title>
+  <style>
+    :root{
+      --bg:#0e1323;         /* deep indigo */
+      --fg:#e6edf3;         /* light text */
+      --accent:#7aa2ff;     /* hud */
+      --danger:#ff6b6b;     /* fireball */
+      --warning:#ffcc66;    /* spikes */
+      --ground:#1b2142;     /* ground line */
+      --platform:#2c3463;   /* floating platforms */
+      --player:#4be4c9;     /* player color */
+    }
+    html,body{height:100%; margin:0; background:var(--bg); color:var(--fg); font-family:system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif}
+    #wrap{display:grid; place-items:center; height:100%;}
+    canvas{background:linear-gradient(180deg, #0d1327 0%, #11183a 60%, #0d1327 100%);
+           box-shadow:0 10px 40px rgba(0,0,0,.5); border-radius:14px; max-width:100vw; max-height:100vh}
+    .hud{position:fixed; inset:12px 12px auto auto; display:flex; gap:12px; align-items:center;}
+    .hud .pill{background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); padding:8px 12px; border-radius:999px; font-weight:600}
+    .help{position:fixed; left:12px; bottom:12px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:10px 12px; line-height:1.5}
+    .help kbd{background:#1f254d; border:1px solid #353c78; border-bottom-width:3px; padding:2px 6px; border-radius:6px; font-weight:700}
+    .overlay{position:fixed; inset:0; display:grid; place-items:center; pointer-events:none}
+    .banner{background:rgba(14,19,35,.75); border:1px solid rgba(255,255,255,.12); padding:18px 22px; border-radius:14px; text-align:center; backdrop-filter: blur(6px)}
+    .banner h1{margin:0 0 10px; font-size:20px}
+    .banner p{margin:6px 0}
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="game" width="1024" height="576" aria-label="Endless Runner Game"></canvas>
+  </div>
+
+  <div class="hud" aria-hidden="true">
+    <div class="pill" id="scorePill">0 m</div>
+    <div class="pill" id="hiPill">HI 0 m</div>
+    <div class="pill" id="speedPill">Speed 0</div>
+  </div>
+
+  <div class="help" aria-hidden="true">
+    <div><strong>Controls</strong></div>
+    <div><kbd>Space</kbd>/<kbd>↑</kbd> Jump · <kbd>C</kbd>/<kbd>Ctrl</kbd>/<kbd>↓</kbd> Crouch (fast-fall in air)</div>
+    <div><kbd>P</kbd> Pause · <kbd>R</kbd> Restart</div>
+  </div>
+
+  <div class="overlay" id="overlay" aria-live="polite"></div>
+
+  <script>
+  // ======= CONFIG =======
+  const CONFIG = {
+    gravity: 2000,
+    jumpVelocity: 900,
+    maxCoyoteTime: 90,            // ms
+    groundY: 520,
+    topClampY: 48,                // keep player on screen
+    startSpeed: 300,
+    maxSpeed: 1200,
+    speedRampPerSec: 18,          // slower difficulty ramp
+    spawn: {
+      obstacleBaseEvery: 1.2,
+      platformBaseEvery: 1.6,
+      platformProb: 0.55,
+      obstacleProb: 0.9,
+    },
+    // Distribution of platform spike variants (must sum ~1)
+    platformSpikes: { none: 0.30, under: 0.35, top: 0.20, both: 0.15 },
+    player: {
+      w: 46, h: 72,
+      crouchH: 40,
+      x: 200,
+      invulnBlinkMs: 100,
+      // Variable jump
+      maxAirTime: 1.0,            // sec
+      holdGravityFactor: 0.35,
+      jumpCutFactor: 0.45,
+      fastFallMultiplier: 2.4,
+      // Slime feel
+      slimeRiseStretch: 0.20,
+      slimeFallSquash: 0.25,
+      slimeLerpRate: 10
+    },
+    fireball: {
+      radius: 18,
+      wobbleAmp: 12,
+      wobbleFreq: 4,
+      color: getComputedStyle(document.documentElement).getPropertyValue('--danger').trim() || '#ff6b6b'
+    },
+    spike: {
+      base: 38, height: 36,
+      color: getComputedStyle(document.documentElement).getPropertyValue('--warning').trim() || '#ffcc66'
+    },
+    platform: {
+      minW: 120, maxW: 260,
+      minY: 260, maxY: 420,
+      thickness: 12,
+      color: getComputedStyle(document.documentElement).getPropertyValue('--platform').trim() || '#2c3463',
+      underSpikeHeight: 22,       // hanging spikes
+      topSpikeHeight: 18,         // spikes on top surface
+      topSpikeStep: 14            // spacing for drawn triangles
+    }
+  };
+
+  // ======= UTIL =======
+  const clamp = (v, a, b)=> Math.max(a, Math.min(b, v));
+  function rectsOverlap(a,b){ return !(a.x+a.w <= b.x || a.x >= b.x+b.w || a.y+a.h <= b.y || a.y >= b.y+b.h); }
+  function circleRectCollide(cx, cy, r, rx, ry, rw, rh){
+    const nx = clamp(cx, rx, rx+rw); const ny = clamp(cy, ry, ry+rh);
+    const dx = cx - nx, dy = cy - ny; return (dx*dx + dy*dy) <= r*r;
+  }
+  function roundRectPath(g, x, y, w, h, r){
+    r = Math.min(r, w/2, h/2);
+    g.beginPath();
+    g.moveTo(x+r, y);
+    g.arcTo(x+w, y,   x+w, y+h, r);
+    g.arcTo(x+w, y+h, x,   y+h, r);
+    g.arcTo(x,   y+h, x,   y,   r);
+    g.arcTo(x,   y,   x+w, y,   r);
+    g.closePath();
+  }
+
+  // ======= INPUT =======
+  const input = { up:false, down:false, crouch:false, pause:false, restart:false };
+  addEventListener('keydown', e=>{
+    if(['Space','ArrowUp','KeyW'].includes(e.code)){ input.up=true; e.preventDefault(); }
+    if(['ArrowDown','ControlLeft','ControlRight','KeyC'].includes(e.code)){ input.down=true; input.crouch=true; e.preventDefault(); }
+    if(e.code==='KeyP'){ input.pause = !input.pause; }
+    if(e.code==='KeyR'){ input.restart = true; }
+  });
+  addEventListener('keyup', e=>{
+    if(['Space','ArrowUp','KeyW'].includes(e.code)){ input.up=false; }
+    if(['ArrowDown','ControlLeft','ControlRight','KeyC'].includes(e.code)){ input.down=false; input.crouch=false; }
+  });
+
+  // ======= GAME STATE =======
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scorePill = document.getElementById('scorePill');
+  const hiPill = document.getElementById('hiPill');
+  const speedPill = document.getElementById('speedPill');
+  const overlay = document.getElementById('overlay');
+
+  const HI_KEY = 'endlessRunnerHiScoreV1';
+  let hiScore = Number(localStorage.getItem(HI_KEY) || 0);
+  hiPill.textContent = HI ${hiScore} m;
+
+  function fitCanvas(){
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const styleW = Math.min(innerWidth-24, 1024);
+    const styleH = Math.min(innerHeight-24, 576);
+    const ar = 1024/576; let w=styleW, h=styleW/ar; if(h>styleH){ h=styleH; w=h*ar; }
+    canvas.style.width = w+'px'; canvas.style.height=h+'px';
+    canvas.width = Math.round(w*dpr); canvas.height = Math.round(h*dpr);
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.imageSmoothingEnabled = true;
+  }
+  addEventListener('resize', fitCanvas); fitCanvas();
+
+  class Player{
+    constructor(){
+      this.x = CONFIG.player.x; this.y = CONFIG.groundY - CONFIG.player.h;
+      this.w = CONFIG.player.w; this.h = CONFIG.player.h;
+      this.vy = 0; this.onGround = true; this.onPlatform = null; this.coyoteMs = 0; this.crouched=false;
+      this.airTime = 0; this.jumpCutApplied = false;
+      this.scaleX = 1; this.scaleY = 1;
+    }
+    get rect(){ return {x:this.x, y:this.y, w:this.w, h:this.h}; }
+    update(dt){
+      // Crouch behavior (stand only on ground to avoid clipping)
+      if(input.crouch){
+        if(!this.crouched){
+          const dh = this.h - CONFIG.player.crouchH; this.y += dh; this.h = CONFIG.player.crouchH; this.crouched=true;
+        }
+      }else if(this.crouched && this.onGround){
+        const newH = CONFIG.player.h; const dy = newH - this.h;
+        this.y -= dy; this.h = newH; this.crouched=false;
+      }
+
+      // Jump start (with coyote)
+      if(input.up && (this.onGround || this.onPlatform || this.coyoteMs>0)){
+        this.vy = -CONFIG.jumpVelocity;
+        this.onGround=false; this.onPlatform=null; this.coyoteMs=0;
+        this.airTime = 0; this.jumpCutApplied = false;
+      }
+
+      // Gravity scaling (variable jump)
+      let g = CONFIG.gravity;
+      if(this.vy < 0 && input.up && this.airTime < CONFIG.player.maxAirTime){
+        g *= CONFIG.player.holdGravityFactor;
+      }else if(!input.up && this.vy < 0 && !this.jumpCutApplied){
+        this.vy *= CONFIG.player.jumpCutFactor; this.jumpCutApplied = true;
+      }
+
+      // Fast-fall when crouching in air
+      if(!this.onGround && !this.onPlatform && input.crouch){ g *= CONFIG.player.fastFallMultiplier; }
+
+      // Integrate
+      this.vy += g * dt; this.y += this.vy * dt;
+
+      // Keep on screen
+      if(this.y < CONFIG.topClampY){ this.y = CONFIG.topClampY; if(this.vy < 0) this.vy = 0; }
+
+      // Ground collide
+      if(this.y + this.h >= CONFIG.groundY){
+        this.y = CONFIG.groundY - this.h; this.vy = 0;
+        if(!this.onGround && !this.onPlatform) this.onGround=true;
+        this.airTime = 0; this.jumpCutApplied = false;
+      }else{
+        if(this.onGround){ this.coyoteMs = CONFIG.maxCoyoteTime; }
+        this.onGround=false; this.airTime += dt;
+        // Hard airtime cap backup
+        if(this.airTime > CONFIG.player.maxAirTime + 0.02 && this.vy < 600){ this.vy = Math.max(this.vy, 600); }
+      }
+
+      if(this.coyoteMs>0 && !(this.onGround||this.onPlatform)){
+        this.coyoteMs -= dt*1000; if(this.coyoteMs<0) this.coyoteMs=0;
+      }
+
+      // Slime squash & stretch
+      let tx=1, ty=1;
+      if(this.crouched){ tx=1.15; ty=0.75; }
+      else {
+        const rise = clamp(-this.vy * 0.0005, 0, CONFIG.player.slimeRiseStretch);
+        const fall = clamp(this.vy * 0.0006, 0, CONFIG.player.slimeFallSquash);
+        const morph = rise - fall; ty = 1 + morph; tx = 1 - morph;
+      }
+      const k = Math.min(1, CONFIG.player.slimeLerpRate * dt);
+      this.scaleX += (tx - this.scaleX) * k;
+      this.scaleY += (ty - this.scaleY) * k;
+    }
+    draw(g){
+      g.save();
+      g.translate(this.x + this.w/2, this.y + this.h);
+      g.scale(this.scaleX, this.scaleY);
+      const w = this.w, h = this.h;
+      roundRectPath(g, -w/2, -h, w, h, 10);
+      g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--player').trim() || '#4be4c9';
+      g.fill();
+      g.fillStyle = 'rgba(0,0,0,.25)'; g.fillRect(w/2 - 12, -h + 8, 6, 8);
+      g.restore();
+    }
+  }
+
+  class Spike{ // ground spike
+    constructor(x){ this.w = CONFIG.spike.base; this.h = CONFIG.spike.height; this.x=x; this.y = CONFIG.groundY - this.h; }
+    get rect(){ return {x:this.x, y:this.y, w:this.w, h:this.h}; }
+    update(dt,speed){ this.x -= speed*dt; }
+    draw(g){
+      g.fillStyle = CONFIG.spike.color;
+      g.beginPath();
+      g.moveTo(this.x, this.y+this.h);
+      g.lineTo(this.x+this.w/2, this.y);
+      g.lineTo(this.x+this.w, this.y+this.h);
+      g.closePath(); g.fill();
+    }
+  }
+
+  class Fireball{
+    constructor(x, baseY){ this.r = CONFIG.fireball.radius; this.x=x; this.baseY=baseY; this.t=0; }
+    get y(){ return this.baseY + Math.sin(this.t*CONFIG.fireball.wobbleFreq*2*Math.PI)*CONFIG.fireball.wobbleAmp; }
+    get rect(){ return {x:this.x-this.r, y:this.y-this.r, w:this.r*2, h:this.r*2}; }
+    update(dt,speed){
+      this.t+=dt;
+      this.x -= (speed * 1.25 + 120) * dt; // clearly moving right->left
+    }
+    draw(g){
+      const y = this.y;
+      g.beginPath(); g.arc(this.x, y, this.r, 0, Math.PI*2);
+      const grd = g.createRadialGradient(this.x, y, 4, this.x, y, this.r);
+      grd.addColorStop(0,'#fff1'); grd.addColorStop(0.2,'#fff6'); grd.addColorStop(0.5, CONFIG.fireball.color); grd.addColorStop(1,'#d22');
+      g.fillStyle = grd; g.fill();
+      g.globalAlpha = 0.22; g.fillStyle = CONFIG.fireball.color;
+      g.beginPath(); g.ellipse(this.x+this.r*0.9, y, this.r*1.9, this.r*0.85, 0, 0, Math.PI*2); g.fill(); g.globalAlpha=1;
+    }
+  }
+
+  class Platform{
+    constructor(x,w,y, hasUnder, hasTop){
+      this.x=x; this.w=w; this.y=y; this.h=CONFIG.platform.thickness;
+      this.hasUnder = hasUnder; this.hasTop = hasTop;
+    }
+    get rect(){ return {x:this.x, y:this.y, w:this.w, h:this.h}; }
+    get underRect(){ return {x:this.x, y:this.y, w:this.w, h:CONFIG.platform.underSpikeHeight}; }
+    get topRect(){ return {x:this.x, y:this.y - CONFIG.platform.topSpikeHeight, w:this.w, h:CONFIG.platform.topSpikeHeight}; }
+    update(dt,speed){ this.x -= speed*dt; }
+    draw(g){
+      // platform bar
+      g.fillStyle = CONFIG.platform.color; g.fillRect(this.x, this.y, this.w, this.h);
+
+      // top spikes (if any)
+      if(this.hasTop){
+        const th = CONFIG.platform.topSpikeHeight, step = CONFIG.platform.topSpikeStep;
+        g.fillStyle = CONFIG.spike.color;
+        for(let x=this.x; x<=this.x+this.w-step/2; x+=step){
+          g.beginPath();
+          g.moveTo(x, this.y);                 // base
+          g.lineTo(x+step/2, this.y - th);     // tip up
+          g.lineTo(x+step, this.y);            // base next
+          g.closePath(); g.fill();
+        }
+      }
+
+      // hanging spikes underneath (if any)
+      if(this.hasUnder){
+        const sh = CONFIG.platform.underSpikeHeight, step = CONFIG.platform.topSpikeStep;
+        g.fillStyle = CONFIG.spike.color;
+        for(let x=this.x; x<=this.x+this.w-step/2; x+=step){
+          g.beginPath();
+          g.moveTo(x, this.y);                 // top
+          g.lineTo(x+step/2, this.y + sh);     // tip down
+          g.lineTo(x+step, this.y);            // top next
+          g.closePath(); g.fill();
+        }
+      }
+    }
+  }
+
+  // pick spike variant for each platform
+  function pickPlatformSpikeVariant(){
+    const d = CONFIG.platformSpikes;
+    const r = Math.random();
+    if(r < d.none) return {under:false, top:false};
+    if(r < d.none + d.under) return {under:true, top:false};
+    if(r < d.none + d.under + d.top) return {under:false, top:true};
+    return {under:true, top:true};
+  }
+
+  class World{
+    constructor(){ this.reset(); }
+    reset(){
+      this.player = new Player();
+      this.obstacles = [];
+      this.platforms = [];
+      this.speed = CONFIG.startSpeed;
+      this.meters = 0; this.alive=true; this.time=0; this.spawnTimerObs=0; this.spawnTimerPlat=0; this.freeze=false;
+      overlay.innerHTML = '';
+    }
+    spawnObstacle(){
+      const roll = Math.random();
+      const x = canvas.clientWidth + 60;
+      if(roll < 0.55){
+        this.obstacles.push(new Spike(x));
+      }else{
+        const minY = 200, maxY = CONFIG.groundY - 120;
+        const y = minY + Math.random()*(maxY-minY);
+        this.obstacles.push(new Fireball(x, y));
+      }
+    }
+    spawnPlatform(){
+      const w = CONFIG.platform.minW + Math.random()*(CONFIG.platform.maxW - CONFIG.platform.minW);
+      const y = CONFIG.platform.minY + Math.random()*(CONFIG.platform.maxY - CONFIG.platform.minY);
+      const x = canvas.clientWidth + 80;
+      const last = this.platforms[this.platforms.length-1];
+      const gap = last ? (x - (last.x + last.w)) : 200;
+      if(last && gap < 120){ return; }
+      const v = pickPlatformSpikeVariant();
+      this.platforms.push(new Platform(x, w, y, v.under, v.top));
+    }
+    handleSpawning(dt){
+      const speedFactor = this.speed / CONFIG.startSpeed;
+      const obsInterval = Math.max(0.42, CONFIG.spawn.obstacleBaseEvery / speedFactor);
+      const platInterval = Math.max(0.62, CONFIG.spawn.platformBaseEvery / Math.sqrt(speedFactor));
+      this.spawnTimerObs += dt; this.spawnTimerPlat += dt;
+      if(this.spawnTimerObs >= obsInterval){ this.spawnTimerObs = 0; if(Math.random() < CONFIG.spawn.obstacleProb) this.spawnObstacle(); }
+      if(this.spawnTimerPlat >= platInterval){ this.spawnTimerPlat = 0; if(Math.random() < CONFIG.spawn.platformProb) this.spawnPlatform(); }
+    }
+    update(dt){
+      if(!this.alive){ return; }
+      if(input.pause){ this.freeze = !this.freeze; input.pause=false; }
+      if(this.freeze){ return; }
+
+      this.time += dt;
+      this.speed = clamp(this.speed + CONFIG.speedRampPerSec*dt, CONFIG.startSpeed, CONFIG.maxSpeed);
+      this.meters += (this.speed * dt) / 50;
+
+      this.handleSpawning(dt);
+
+      // Update entities
+      this.player.update(dt);
+      for(const p of this.platforms) p.update(dt, this.speed);
+      for(const o of this.obstacles) o.update(dt, this.speed);
+
+      // Cleanup off-screen
+      this.platforms = this.platforms.filter(p=> p.x + p.w > -50);
+      this.obstacles = this.obstacles.filter(o=> (o instanceof Spike ? o.x + o.w : o.x + o.r) > -60);
+
+      // Platform logic: top landing, hazards
+      const pl = this.player;
+      pl.onPlatform = null;
+
+      for(const pf of this.platforms){
+        // 1) Hazard: top spikes — if you touch them, you die (crouch doesn't help)
+        if(pf.hasTop && rectsOverlap(pl.rect, pf.topRect)){ return this.die(); }
+
+        // 2) Normal platform top landing (only if no top spikes)
+        const prevY = pl.y - pl.vy*dt;
+        const wasAbove = prevY + pl.h <= pf.y + 2;
+        if(!pf.hasTop && rectsOverlap(pl.rect, pf.rect)){
+          if(wasAbove && pl.vy>=0){
+            pl.y = pf.y - pl.h; pl.vy = 0; pl.onPlatform = pf;
+          }else{
+            if(pl.x + pl.w/2 < pf.x + pf.w/2){ pl.x = pf.x - pl.w - 0.1; } else { pl.x = pf.x + pf.w + 0.1; }
+          }
+        }
+
+        // 3) Hazard: under spikes — only lethal if NOT crouched (forces crouch when passing below)
+        if(pf.hasUnder && rectsOverlap(pl.rect, pf.underRect) && !pl.crouched){
+          return this.die();
+        }
+      }
+
+      // Ground/air obstacles
+      const pr = pl.rect;
+      for(const o of this.obstacles){
+        if(o instanceof Spike){
+          if(rectsOverlap(pr, o.rect)) return this.die();
+        }else if(o instanceof Fireball){
+          if(circleRectCollide(o.x, o.y, o.r*0.9, pr.x, pr.y, pr.w, pr.h)) return this.die();
+        }
+      }
+
+      // HUD
+      scorePill.textContent = ${Math.floor(this.meters)} m;
+      speedPill.textContent = Speed ${Math.round(this.speed)};
+    }
+    die(){
+      this.alive=false; this.freeze=true;
+      const score = Math.floor(this.meters);
+      if(score>hiScore){ hiScore=score; localStorage.setItem(HI_KEY, hiScore); hiPill.textContent = HI ${hiScore} m; }
+      overlay.innerHTML = `
+        <div class="banner">
+          <h1>Game Over</h1>
+          <p>Distance: <strong>${score} m</strong> · Top: <strong>${hiScore} m</strong></p>
+          <p>Press <kbd>R</kbd> to restart · <kbd>P</kbd> to pause/resume</p>
+        </div>`;
+    }
+    draw(g){
+      const W = canvas.clientWidth, H = canvas.clientHeight;
+      g.clearRect(0,0,W,H);
+
+      // ground
+      g.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--ground').trim() || '#1b2142';
+      g.lineWidth = 4; g.beginPath(); g.moveTo(0, CONFIG.groundY+2); g.lineTo(W, CONFIG.groundY+2); g.stroke();
+
+      // platforms (each draws its own spikes if any)
+      for(const pf of this.platforms) pf.draw(g);
+
+      // obstacles
+      for(const o of this.obstacles) o.draw(g);
+
+      // player
+      this.player.draw(g);
+
+      // start/help
+      if(this.time < 1.2){
+        g.globalAlpha = 1 - this.time/1.2;
+        g.fillStyle = '#fff9'; g.font = '600 18px system-ui, sans-serif';
+        g.fillText('Press SPACE to jump · C/CTRL to crouch (fast-fall)', 24, 40);
+        g.globalAlpha = 1;
+      }
+
+      if(!this.alive){
+        g.fillStyle = 'rgba(0,0,0,.15)'; g.fillRect(0,0,W,H);
+      }
+    }
+  }
+
+  const world = new World();
+
+  // ======= MAIN LOOP =======
+  let last = performance.now();
+  function frame(now){
+    const dt = clamp((now - last)/1000, 0, 1/20);
+    last = now;
+
+    if(world.alive && !world.freeze){ world.update(dt); }
+    world.draw(ctx);
+
+    if(input.restart){ input.restart=false; world.reset(); }
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  canvas.addEventListener('click', ()=> canvas.focus && canvas.focus());
+  </script>
+</body>
+</html>
