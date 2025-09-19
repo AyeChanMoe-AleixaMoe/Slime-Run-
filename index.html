@@ -9,11 +9,12 @@
       --bg:#0e1323;         /* deep indigo */
       --fg:#e6edf3;         /* light text */
       --accent:#7aa2ff;     /* hud */
-      --danger:#ff6b6b;     /* fireball */
+      --danger:#ff6b6b;     /* fireball / flame */
       --warning:#ffcc66;    /* spikes */
       --ground:#1b2142;     /* ground line */
       --platform:#2c3463;   /* floating platforms */
       --player:#4be4c9;     /* player color */
+      --pipe:#6b7280;       /* fire pipe */
     }
     html,body{height:100%; margin:0; background:var(--bg); color:var(--fg); font-family:system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif}
     #wrap{display:grid; place-items:center; height:100%;}
@@ -24,9 +25,12 @@
     .help{position:fixed; left:12px; bottom:12px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:10px 12px; line-height:1.5}
     .help kbd{background:#1f254d; border:1px solid #353c78; border-bottom-width:3px; padding:2px 6px; border-radius:6px; font-weight:700}
     .overlay{position:fixed; inset:0; display:grid; place-items:center; pointer-events:none}
+    .overlay.active{pointer-events:auto}
     .banner{background:rgba(14,19,35,.75); border:1px solid rgba(255,255,255,.12); padding:18px 22px; border-radius:14px; text-align:center; backdrop-filter: blur(6px)}
     .banner h1{margin:0 0 10px; font-size:20px}
     .banner p{margin:6px 0}
+    .btn{background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.2); color:var(--fg); padding:8px 14px; border-radius:10px; cursor:pointer; font-weight:700}
+    .btn:hover{background:rgba(255,255,255,.15)}
   </style>
 </head>
 <body>
@@ -43,7 +47,7 @@
   <div class="help" aria-hidden="true">
     <div><strong>Controls</strong></div>
     <div><kbd>Space</kbd>/<kbd>↑</kbd> Jump · <kbd>C</kbd>/<kbd>Ctrl</kbd>/<kbd>↓</kbd> Crouch (fast-fall in air)</div>
-    <div><kbd>P</kbd> Pause · <kbd>R</kbd> Restart</div>
+    <div><kbd>P</kbd> Pause/Resume · <kbd>R</kbd> Restart</div>
   </div>
 
   <div class="overlay" id="overlay" aria-live="polite"></div>
@@ -54,33 +58,43 @@
     gravity: 2000,
     jumpVelocity: 900,
     maxCoyoteTime: 90,            // ms
-    groundY: 520,
+    baseGroundY: 520,
     topClampY: 48,                // keep player on screen
     startSpeed: 300,
     maxSpeed: 1200,
-    speedRampPerSec: 18,          // slower difficulty ramp
+    speedRampPerSec: 16,
     spawn: {
       obstacleBaseEvery: 1.2,
       platformBaseEvery: 1.6,
       platformProb: 0.55,
       obstacleProb: 0.9,
+      pipeProb: 0.22,
+      bounceBoulderProb: 0.35
     },
-    // Distribution of platform spike variants (must sum ~1)
-    platformSpikes: { none: 0.30, under: 0.35, top: 0.20, both: 0.15 },
+    terrain: {
+      flatProb: 0.55,
+      upSlopeProb: 0.20,
+      downSlopeProb: 0.18,
+      holeProb: 0.07,
+      minW: 260, maxW: 540,
+      maxRise: 110,
+      minY: 420, maxY: 540
+    },
     player: {
       w: 46, h: 72,
       crouchH: 40,
       x: 200,
       invulnBlinkMs: 100,
-      // Variable jump
-      maxAirTime: 1.0,            // sec
+      maxAirTime: 1.0,
       holdGravityFactor: 0.35,
       jumpCutFactor: 0.45,
       fastFallMultiplier: 2.4,
-      // Slime feel
       slimeRiseStretch: 0.20,
       slimeFallSquash: 0.25,
-      slimeLerpRate: 10
+      slimeLerpRate: 10,
+      bonkSquashX: 1.25,
+      bonkSquashY: 0.78,
+      bonkDuration: 0.18
     },
     fireball: {
       radius: 18,
@@ -92,14 +106,32 @@
       base: 38, height: 36,
       color: getComputedStyle(document.documentElement).getPropertyValue('--warning').trim() || '#ffcc66'
     },
+    boulder: {
+      rMin: 16, rMax: 22,
+      minBounceH: 100,
+      maxBounceH: 150,
+      driftMin: 120,
+      driftMax: 220
+    },
+    rollBoulder: { r: 22, rollBoost: 200 },
     platform: {
       minW: 120, maxW: 260,
       minY: 260, maxY: 420,
       thickness: 12,
       color: getComputedStyle(document.documentElement).getPropertyValue('--platform').trim() || '#2c3463',
-      underSpikeHeight: 22,       // hanging spikes
-      topSpikeHeight: 18,         // spikes on top surface
-      topSpikeStep: 14            // spacing for drawn triangles
+      underSpikeHeight: 22,
+      topSpikeHeight: 18,
+      step: 14,
+      topDist:   { none: 0.45, few: 0.40, full: 0.15 },
+      underDist: { none: 0.50, few: 0.35, full: 0.15 },
+      fewMin: 1, fewMax: 3
+    },
+    pipe: {
+      w: 26, h: 16,
+      flameW: 16, minFlame: 90, maxFlame: 160,
+      onTime: 0.55, cooldown: 1.0,
+      color: getComputedStyle(document.documentElement).getPropertyValue('--pipe').trim() || '#6b7280',
+      fadeRate: 10
     }
   };
 
@@ -120,13 +152,15 @@
     g.arcTo(x,   y,   x+w, y,   r);
     g.closePath();
   }
+  const randInt=(a,b)=> (a+Math.floor(Math.random()*(b-a+1)));
+  const randRange=(a,b)=> (a + Math.random()*(b-a));
 
   // ======= INPUT =======
   const input = { up:false, down:false, crouch:false, pause:false, restart:false };
   addEventListener('keydown', e=>{
     if(['Space','ArrowUp','KeyW'].includes(e.code)){ input.up=true; e.preventDefault(); }
     if(['ArrowDown','ControlLeft','ControlRight','KeyC'].includes(e.code)){ input.down=true; input.crouch=true; e.preventDefault(); }
-    if(e.code==='KeyP'){ input.pause = !input.pause; }
+    if(e.code==='KeyP'){ input.pause = true; }  // handled in frame loop
     if(e.code==='KeyR'){ input.restart = true; }
   });
   addEventListener('keyup', e=>{
@@ -158,17 +192,229 @@
   }
   addEventListener('resize', fitCanvas); fitCanvas();
 
+  // ======= TERRAIN =======
+  class Segment{
+    constructor(x, w, y0, y1, kind='solid'){ this.x=x; this.w=w; this.y0=y0; this.y1=y1; this.kind=kind; }
+    get slope(){ return (this.y1 - this.y0)/this.w; }
+    yAt(px){ const t = clamp((px - this.x)/this.w, 0, 1); return this.y0 + (this.y1 - this.y0) * t; }
+    right(){ return this.x + this.w; }
+    update(dt, speed){ this.x -= speed*dt; }
+    draw(g){
+      if(this.kind==='hole') return;
+      g.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--ground').trim() || '#1b2142';
+      g.lineWidth = 4; g.beginPath(); g.moveTo(this.x, this.y0+2); g.lineTo(this.x+this.w, this.y1+2); g.stroke();
+    }
+  }
+
+  // ======= PLATFORM HELPERS =======
+  function buildSpikeOffsets(width, step, pattern, fewMin, fewMax){
+    const offsets = [];
+    const cells = Math.max(1, Math.floor(width / step));
+    if(pattern === 'none') return offsets;
+    if(pattern === 'full'){ for(let i=0;i<cells;i++) offsets.push(i*step); return offsets; }
+    const n = randInt(fewMin, Math.min(fewMax, cells));
+    const taken = new Set();
+    while(taken.size < n) taken.add(randInt(0, cells-1));
+    for(const c of taken) offsets.push(c*step);
+    return offsets;
+  }
+  function choosePattern(dist){
+    const r = Math.random();
+    if(r < dist.none) return 'none';
+    if(r < dist.none + dist.few) return 'few';
+    return 'full';
+  }
+
+  class Platform{
+    constructor(x,w,y){
+      this.x=x; this.w=w; this.y=y; this.h=CONFIG.platform.thickness;
+      this.topPattern   = choosePattern(CONFIG.platform.topDist);
+      this.underPattern = choosePattern(CONFIG.platform.underDist);
+      const {step, fewMin, fewMax} = CONFIG.platform;
+      this.topOffsets   = buildSpikeOffsets(this.w, step, this.topPattern,   fewMin, fewMax);
+      this.underOffsets = buildSpikeOffsets(this.w, step, this.underPattern, fewMin, fewMax);
+    }
+    get rect(){ return {x:this.x, y:this.y, w:this.w, h:this.h}; }
+    update(dt,speed){ this.x -= speed*dt; }
+    topHazardRects(){ const rs=[]; const step=CONFIG.platform.step, th=CONFIG.platform.topSpikeHeight;
+      for(const off of this.topOffsets) rs.push({x:this.x+off, y:this.y - th, w:step, h:th}); return rs; }
+    underHazardRects(){ const rs=[]; const step=CONFIG.platform.step, sh=CONFIG.platform.underSpikeHeight;
+      for(const off of this.underOffsets) rs.push({x:this.x+off, y:this.y, w:step, h:sh}); return rs; }
+    draw(g){
+      g.fillStyle = CONFIG.platform.color; g.fillRect(this.x, this.y, this.w, this.h);
+      const step = CONFIG.platform.step;
+      if(this.topOffsets.length){
+        const th = CONFIG.platform.topSpikeHeight; g.fillStyle = CONFIG.spike.color;
+        for(const off of this.topOffsets){
+          const x = this.x + off;
+          g.beginPath(); g.moveTo(x, this.y); g.lineTo(x+step/2, this.y - th); g.lineTo(x+step, this.y); g.closePath(); g.fill();
+        }
+      }
+      if(this.underOffsets.length){
+        const sh = CONFIG.platform.underSpikeHeight; g.fillStyle = CONFIG.spike.color;
+        for(const off of this.underOffsets){
+          const x = this.x + off;
+          g.beginPath(); g.moveTo(x, this.y); g.lineTo(x+step/2, this.y + sh); g.lineTo(x+step, this.y); g.closePath(); g.fill();
+        }
+      }
+    }
+  }
+
+  // ======= HAZARDS =======
+  class Spike{
+    constructor(x){ this.w = CONFIG.spike.base; this.h = CONFIG.spike.height; this.x=x; this.y = CONFIG.baseGroundY - this.h; }
+    get rect(){ return {x:this.x, y:this.y, w:this.w, h:this.h}; }
+    update(dt,speed,world){
+      this.x -= speed*dt;
+      const gy = world.groundYAt(this.x + this.w/2);
+      if(gy !== null) this.y = gy - this.h;
+    }
+    draw(g){
+      g.fillStyle = CONFIG.spike.color;
+      g.beginPath(); g.moveTo(this.x, this.y+this.h);
+      g.lineTo(this.x+this.w/2, this.y);
+      g.lineTo(this.x+this.w, this.y+this.h);
+      g.closePath(); g.fill();
+    }
+  }
+
+  class Fireball{
+    constructor(x, baseY){ this.r = CONFIG.fireball.radius; this.x=x; this.baseY=baseY; this.t=0; }
+    get y(){ return this.baseY + Math.sin(this.t*CONFIG.fireball.wobbleFreq*2*Math.PI)*CONFIG.fireball.wobbleAmp; }
+    get rect(){ return {x:this.x-this.r, y:this.y-this.r, w:this.r*2, h:this.r*2}; }
+    update(dt,speed){ this.t+=dt; this.x -= (speed * 1.25 + 120) * dt; }
+    draw(g){
+      const y = this.y;
+      g.beginPath(); g.arc(this.x, y, this.r, 0, Math.PI*2);
+      const grd = g.createRadialGradient(this.x, y, 4, this.x, y, this.r);
+      grd.addColorStop(0,'#fff1'); grd.addColorStop(0.2,'#fff6'); grd.addColorStop(0.5, CONFIG.fireball.color); grd.addColorStop(1,'#d22');
+      g.fillStyle = grd; g.fill();
+      g.globalAlpha = 0.22; g.fillStyle = CONFIG.fireball.color;
+      g.beginPath(); g.ellipse(this.x+this.r*0.9, y, this.r*1.9, this.r*0.85, 0, 0, Math.PI*2); g.fill(); g.globalAlpha=1;
+    }
+  }
+
+  class BouncingBoulder{
+    constructor(x, y){
+      this.r = randInt(CONFIG.boulder.rMin, CONFIG.boulder.rMax);
+      this.x = x; this.y = y; this.vy = 0;
+      this.drift = randRange(CONFIG.boulder.driftMin, CONFIG.boulder.driftMax);
+    }
+    get rect(){ return {x:this.x-this.r, y:this.y-this.r, w:this.r*2, h:this.r*2}; }
+    update(dt, speed, world){
+      this.vy += CONFIG.gravity * dt;
+      this.y  += this.vy * dt;
+      this.x  -= (speed + this.drift) * dt;
+      const gy = world.groundYAt(this.x);
+      if(gy !== null && this.y + this.r >= gy){
+        this.y = gy - this.r;
+        const H = randRange(CONFIG.boulder.minBounceH, CONFIG.boulder.maxBounceH);
+        const vyUp = Math.sqrt(2 * CONFIG.gravity * H);
+        this.vy = -vyUp;
+      }
+    }
+    draw(g){
+      g.beginPath(); g.arc(this.x, this.y, this.r, 0, Math.PI*2);
+      const grd = g.createRadialGradient(this.x-this.r*0.3, this.y-this.r*0.3, this.r*0.2, this.x, this.y, this.r);
+      grd.addColorStop(0,'#fff6'); grd.addColorStop(0.2,'#bbb'); grd.addColorStop(1,'#666');
+      g.fillStyle = grd; g.fill();
+    }
+  }
+
+  class RollingBoulder{
+    constructor(x, y){ this.r = CONFIG.rollBoulder.r; this.x = x; this.y = y; }
+    get rect(){ return {x:this.x-this.r, y:this.y-this.r, w:this.r*2, h:this.r*2}; }
+    update(dt, speed, world){
+      this.x -= (speed + CONFIG.rollBoulder.rollBoost) * dt;
+      const gy = world.groundYAt(this.x);
+      if(gy !== null) this.y = gy - this.r;
+      else { this.y += CONFIG.gravity * dt * dt; }
+    }
+    draw(g){
+      g.beginPath(); g.arc(this.x, this.y, this.r, 0, Math.PI*2);
+      g.fillStyle = '#7a7a7a'; g.fill();
+      g.fillStyle = '#ffffff55'; g.beginPath(); g.arc(this.x-this.r*0.4, this.y-this.r*0.4, this.r*0.5, 0, Math.PI*2); g.fill();
+    }
+  }
+
+  class FirePipe{
+    constructor(x, flameH){
+      this.x = x; this.y = CONFIG.baseGroundY;
+      this.w = CONFIG.pipe.w; this.h = CONFIG.pipe.h;
+      this.flameH = flameH;
+      this.timer = Math.random() * (CONFIG.pipe.onTime + CONFIG.pipe.cooldown);
+      this.on = Math.random() < 0.5;
+      this.intensity = this.on ? 1 : 0;
+      this.anim = 0; this.seed = Math.random()*Math.PI*2;
+    }
+    baseRect(){ return {x:this.x - this.w/2, y:this.y - this.h, w:this.w, h:this.h}; }
+    flameRect(scale=1){
+      const frW = CONFIG.pipe.flameW;
+      const h = this.flameH * scale;
+      return {x:this.x - frW/2, y:this.y - this.h - h, w:frW, h:h};
+    }
+    update(dt, speed, world){
+      this.anim += dt;
+      this.x -= speed*dt;
+      const gy = world.groundYAt(this.x);
+      this.y = (gy !== null) ? gy : CONFIG.baseGroundY;
+
+      this.timer -= dt;
+      if(this.on && this.timer <= 0){ this.on = false; this.timer = CONFIG.pipe.cooldown; }
+      else if(!this.on && this.timer <= 0){ this.on = true; this.timer = CONFIG.pipe.onTime; }
+
+      const target = this.on ? 1 : 0;
+      const k = Math.min(1, CONFIG.pipe.fadeRate*dt);
+      this.intensity += (target - this.intensity) * k;
+    }
+    draw(g){
+      const b = this.baseRect();
+      g.fillStyle = CONFIG.pipe.color; g.fillRect(b.x, b.y, b.w, b.h);
+      g.fillStyle = '#9aa3b2'; g.fillRect(b.x-2, b.y-4, b.w+4, 4);
+
+      if(this.intensity > 0.02){
+        const scale = this.intensity;
+        const flicker = 0.08 * Math.sin(this.anim*12 + this.seed) + 0.05 * Math.sin(this.anim*7 + this.seed*1.7);
+        const h = this.flameH * (0.85 + 0.15*scale) * (1 + flicker);
+        const w = CONFIG.pipe.flameW * (0.9 + 0.3*scale * (1 - 0.5*Math.sin(this.anim*9 + this.seed)));
+
+        const x = this.x, baseY = this.y - this.h;
+        g.beginPath();
+        g.moveTo(x - w*0.5, baseY);
+        g.quadraticCurveTo(x - w*0.25, baseY - h*0.45*(1+0.2*Math.sin(this.anim*6+this.seed)),
+                           x,           baseY - h);
+        g.quadraticCurveTo(x + w*0.25, baseY - h*0.45*(1-0.2*Math.sin(this.anim*5+this.seed*0.9)),
+                           x + w*0.5,   baseY);
+        g.closePath();
+
+        const grd = g.createLinearGradient(x, baseY-h, x, baseY);
+        grd.addColorStop(0,   '#ffe082');
+        grd.addColorStop(0.35,'#ffb74d');
+        grd.addColorStop(0.7, '#ff6b6b');
+        grd.addColorStop(1,   '#b91c1c');
+        g.fillStyle = grd;
+        g.globalAlpha = clamp(0.3 + 0.7*scale, 0, 1);
+        g.fill();
+        g.globalAlpha = 1;
+      }
+    }
+  }
+
+  // ======= PLAYER =======
+  let FRAME_GROUND_Y = CONFIG.baseGroundY;
   class Player{
     constructor(){
-      this.x = CONFIG.player.x; this.y = CONFIG.groundY - CONFIG.player.h;
+      this.x = CONFIG.player.x; this.y = CONFIG.baseGroundY - CONFIG.player.h;
       this.w = CONFIG.player.w; this.h = CONFIG.player.h;
       this.vy = 0; this.onGround = true; this.onPlatform = null; this.coyoteMs = 0; this.crouched=false;
       this.airTime = 0; this.jumpCutApplied = false;
       this.scaleX = 1; this.scaleY = 1;
+      this.bonkTimer = 0;
     }
     get rect(){ return {x:this.x, y:this.y, w:this.w, h:this.h}; }
     update(dt){
-      // Crouch behavior (stand only on ground to avoid clipping)
+      if(this.bonkTimer>0) this.bonkTimer = Math.max(0, this.bonkTimer - dt);
+
       if(input.crouch){
         if(!this.crouched){
           const dh = this.h - CONFIG.player.crouchH; this.y += dh; this.h = CONFIG.player.crouchH; this.crouched=true;
@@ -178,14 +424,12 @@
         this.y -= dy; this.h = newH; this.crouched=false;
       }
 
-      // Jump start (with coyote)
       if(input.up && (this.onGround || this.onPlatform || this.coyoteMs>0)){
         this.vy = -CONFIG.jumpVelocity;
         this.onGround=false; this.onPlatform=null; this.coyoteMs=0;
         this.airTime = 0; this.jumpCutApplied = false;
       }
 
-      // Gravity scaling (variable jump)
       let g = CONFIG.gravity;
       if(this.vy < 0 && input.up && this.airTime < CONFIG.player.maxAirTime){
         g *= CONFIG.player.holdGravityFactor;
@@ -193,24 +437,19 @@
         this.vy *= CONFIG.player.jumpCutFactor; this.jumpCutApplied = true;
       }
 
-      // Fast-fall when crouching in air
       if(!this.onGround && !this.onPlatform && input.crouch){ g *= CONFIG.player.fastFallMultiplier; }
 
-      // Integrate
       this.vy += g * dt; this.y += this.vy * dt;
 
-      // Keep on screen
       if(this.y < CONFIG.topClampY){ this.y = CONFIG.topClampY; if(this.vy < 0) this.vy = 0; }
 
-      // Ground collide
-      if(this.y + this.h >= CONFIG.groundY){
-        this.y = CONFIG.groundY - this.h; this.vy = 0;
+      if(FRAME_GROUND_Y !== null && this.y + this.h >= FRAME_GROUND_Y){
+        this.y = FRAME_GROUND_Y - this.h; this.vy = 0;
         if(!this.onGround && !this.onPlatform) this.onGround=true;
         this.airTime = 0; this.jumpCutApplied = false;
       }else{
         if(this.onGround){ this.coyoteMs = CONFIG.maxCoyoteTime; }
         this.onGround=false; this.airTime += dt;
-        // Hard airtime cap backup
         if(this.airTime > CONFIG.player.maxAirTime + 0.02 && this.vy < 600){ this.vy = Math.max(this.vy, 600); }
       }
 
@@ -218,7 +457,6 @@
         this.coyoteMs -= dt*1000; if(this.coyoteMs<0) this.coyoteMs=0;
       }
 
-      // Slime squash & stretch
       let tx=1, ty=1;
       if(this.crouched){ tx=1.15; ty=0.75; }
       else {
@@ -226,6 +464,7 @@
         const fall = clamp(this.vy * 0.0006, 0, CONFIG.player.slimeFallSquash);
         const morph = rise - fall; ty = 1 + morph; tx = 1 - morph;
       }
+      if(this.bonkTimer>0){ tx = Math.max(tx, CONFIG.player.bonkSquashX); ty = Math.min(ty, CONFIG.player.bonkSquashY); }
       const k = Math.min(1, CONFIG.player.slimeLerpRate * dt);
       this.scaleX += (tx - this.scaleX) * k;
       this.scaleY += (ty - this.scaleY) * k;
@@ -243,228 +482,312 @@
     }
   }
 
-  class Spike{ // ground spike
-    constructor(x){ this.w = CONFIG.spike.base; this.h = CONFIG.spike.height; this.x=x; this.y = CONFIG.groundY - this.h; }
-    get rect(){ return {x:this.x, y:this.y, w:this.w, h:this.h}; }
-    update(dt,speed){ this.x -= speed*dt; }
-    draw(g){
-      g.fillStyle = CONFIG.spike.color;
-      g.beginPath();
-      g.moveTo(this.x, this.y+this.h);
-      g.lineTo(this.x+this.w/2, this.y);
-      g.lineTo(this.x+this.w, this.y+this.h);
-      g.closePath(); g.fill();
-    }
-  }
-
-  class Fireball{
-    constructor(x, baseY){ this.r = CONFIG.fireball.radius; this.x=x; this.baseY=baseY; this.t=0; }
-    get y(){ return this.baseY + Math.sin(this.t*CONFIG.fireball.wobbleFreq*2*Math.PI)*CONFIG.fireball.wobbleAmp; }
-    get rect(){ return {x:this.x-this.r, y:this.y-this.r, w:this.r*2, h:this.r*2}; }
-    update(dt,speed){
-      this.t+=dt;
-      this.x -= (speed * 1.25 + 120) * dt; // clearly moving right->left
-    }
-    draw(g){
-      const y = this.y;
-      g.beginPath(); g.arc(this.x, y, this.r, 0, Math.PI*2);
-      const grd = g.createRadialGradient(this.x, y, 4, this.x, y, this.r);
-      grd.addColorStop(0,'#fff1'); grd.addColorStop(0.2,'#fff6'); grd.addColorStop(0.5, CONFIG.fireball.color); grd.addColorStop(1,'#d22');
-      g.fillStyle = grd; g.fill();
-      g.globalAlpha = 0.22; g.fillStyle = CONFIG.fireball.color;
-      g.beginPath(); g.ellipse(this.x+this.r*0.9, y, this.r*1.9, this.r*0.85, 0, 0, Math.PI*2); g.fill(); g.globalAlpha=1;
-    }
-  }
-
-  class Platform{
-    constructor(x,w,y, hasUnder, hasTop){
-      this.x=x; this.w=w; this.y=y; this.h=CONFIG.platform.thickness;
-      this.hasUnder = hasUnder; this.hasTop = hasTop;
-    }
-    get rect(){ return {x:this.x, y:this.y, w:this.w, h:this.h}; }
-    get underRect(){ return {x:this.x, y:this.y, w:this.w, h:CONFIG.platform.underSpikeHeight}; }
-    get topRect(){ return {x:this.x, y:this.y - CONFIG.platform.topSpikeHeight, w:this.w, h:CONFIG.platform.topSpikeHeight}; }
-    update(dt,speed){ this.x -= speed*dt; }
-    draw(g){
-      // platform bar
-      g.fillStyle = CONFIG.platform.color; g.fillRect(this.x, this.y, this.w, this.h);
-
-      // top spikes (if any)
-      if(this.hasTop){
-        const th = CONFIG.platform.topSpikeHeight, step = CONFIG.platform.topSpikeStep;
-        g.fillStyle = CONFIG.spike.color;
-        for(let x=this.x; x<=this.x+this.w-step/2; x+=step){
-          g.beginPath();
-          g.moveTo(x, this.y);                 // base
-          g.lineTo(x+step/2, this.y - th);     // tip up
-          g.lineTo(x+step, this.y);            // base next
-          g.closePath(); g.fill();
-        }
-      }
-
-      // hanging spikes underneath (if any)
-      if(this.hasUnder){
-        const sh = CONFIG.platform.underSpikeHeight, step = CONFIG.platform.topSpikeStep;
-        g.fillStyle = CONFIG.spike.color;
-        for(let x=this.x; x<=this.x+this.w-step/2; x+=step){
-          g.beginPath();
-          g.moveTo(x, this.y);                 // top
-          g.lineTo(x+step/2, this.y + sh);     // tip down
-          g.lineTo(x+step, this.y);            // top next
-          g.closePath(); g.fill();
-        }
-      }
-    }
-  }
-
-  // pick spike variant for each platform
-  function pickPlatformSpikeVariant(){
-    const d = CONFIG.platformSpikes;
-    const r = Math.random();
-    if(r < d.none) return {under:false, top:false};
-    if(r < d.none + d.under) return {under:true, top:false};
-    if(r < d.none + d.under + d.top) return {under:false, top:true};
-    return {under:true, top:true};
-  }
-
+  // ======= WORLD =======
   class World{
-    constructor(){ this.reset(); }
+    constructor(){
+      this.reset();
+      this.state = 'menu';          // 'menu' | 'playing' | 'paused' | 'dead' | 'credits'
+      showMenu(this);               // <-- pass instance, avoid undefined global
+    }
     reset(){
       this.player = new Player();
       this.obstacles = [];
       this.platforms = [];
+      this.terrain = [];
       this.speed = CONFIG.startSpeed;
       this.meters = 0; this.alive=true; this.time=0; this.spawnTimerObs=0; this.spawnTimerPlat=0; this.freeze=false;
+
+      const W = canvas.clientWidth;
+      this.terrain.push(new Segment(-100, W+400, CONFIG.baseGroundY, CONFIG.baseGroundY, 'solid'));
+      while(this.terrain[this.terrain.length-1].right() < W+600) this.addSegment();
+
+      const gy = this.groundYAt(this.player.x + this.player.w/2) ?? CONFIG.baseGroundY;
+      this.player.y = gy - this.player.h;
+    }
+
+    start(){
+      this.reset();
+      this.state = 'playing';
+      overlay.classList.remove('active');
       overlay.innerHTML = '';
     }
+    pause(){
+      if(this.state!=='playing') return;
+      this.state = 'paused';
+      setOverlay(`
+        <div class="banner">
+          <h1>Paused</h1>
+          <p><button id="btnResume" class="btn">Resume</button></p>
+          <p><button id="btnRestart" class="btn">Restart</button></p>
+          <p><button id="btnMenu" class="btn">Main Menu</button></p>
+        </div>`, true);
+      byId('btnResume').onclick = ()=> this.resume();
+      byId('btnRestart').onclick = ()=> { this.start(); };
+      byId('btnMenu').onclick = ()=> showMenu(this);
+    }
+    resume(){
+      if(this.state!=='paused') return;
+      this.state = 'playing';
+      overlay.classList.remove('active');
+      overlay.innerHTML = '';
+    }
+
+    addSegment(){
+      const last = this.terrain[this.terrain.length-1];
+      const x = last.right();
+      const w = randInt(CONFIG.terrain.minW, CONFIG.terrain.maxW);
+
+      const r = Math.random();
+      const inY = last.y1;
+      const clampY = y => clamp(y, CONFIG.terrain.minY, CONFIG.terrain.maxY);
+
+      if(r < CONFIG.terrain.holeProb){
+        this.terrain.push(new Segment(x, randInt(120, 220), inY, inY, 'hole')); return;
+      }
+      if(r < CONFIG.terrain.holeProb + CONFIG.terrain.upSlopeProb){
+        const dy = -randInt(40, CONFIG.terrain.maxRise);
+        const y1 = clampY(inY + dy);
+        this.terrain.push(new Segment(x, w, inY, y1, 'solid')); return;
+      }
+      if(r < CONFIG.terrain.holeProb + CONFIG.terrain.upSlopeProb + CONFIG.terrain.downSlopeProb){
+        const dy = randInt(40, CONFIG.terrain.maxRise);
+        const y1 = clampY(inY + dy);
+        this.terrain.push(new Segment(x, w, inY, y1, 'solid')); return;
+      }
+      this.terrain.push(new Segment(x, w, inY, inY, 'solid'));
+    }
+
+    groundYAt(px){
+      for(const seg of this.terrain){
+        if(px >= seg.x && px <= seg.right()){
+          if(seg.kind==='hole') return null;
+          return seg.yAt(px);
+        }
+      }
+      return CONFIG.baseGroundY;
+    }
+    segmentAtX(px){
+      for(const seg of this.terrain){
+        if(px >= seg.x && px <= seg.right()) return seg;
+      }
+      return null;
+    }
+
     spawnObstacle(){
-      const roll = Math.random();
       const x = canvas.clientWidth + 60;
-      if(roll < 0.55){
-        this.obstacles.push(new Spike(x));
+      const seg = this.segmentAtX(x) || this.terrain[this.terrain.length-1];
+      const slope = seg.kind==='solid' ? seg.slope : 0;
+      const upclineZone = (seg.kind==='solid' && slope < -0.05);
+      const gy = this.groundYAt(x);
+
+      if(upclineZone){
+        if(Math.random() < 0.6 && gy !== null){
+          this.obstacles.push(new RollingBoulder(x, gy - CONFIG.rollBoulder.r));
+        }else if(gy !== null){
+          this.obstacles.push(new Spike(x - CONFIG.spike.base/2));
+        }
+        return;
+      }
+
+      const roll = Math.random();
+      if(roll < CONFIG.spawn.pipeProb && gy !== null){
+        const flameH = randInt(CONFIG.pipe.minFlame, CONFIG.pipe.maxFlame);
+        this.obstacles.push(new FirePipe(x, flameH));
+      }else if(roll < CONFIG.spawn.pipeProb + CONFIG.spawn.bounceBoulderProb){
+        const minY = 120, maxY = CONFIG.baseGroundY - 160;
+        const y = randInt(minY, maxY);
+        this.obstacles.push(new BouncingBoulder(x, y));
       }else{
-        const minY = 200, maxY = CONFIG.groundY - 120;
-        const y = minY + Math.random()*(maxY-minY);
-        this.obstacles.push(new Fireball(x, y));
+        if(Math.random() < 0.55 && gy !== null){
+          this.obstacles.push(new Spike(x - CONFIG.spike.base/2));
+        }else{
+          const minY = 200, maxY = (gy ?? CONFIG.baseGroundY) - 120;
+          const y = clamp(minY + Math.random()*(maxY-minY), 140, CONFIG.baseGroundY - 140);
+          this.obstacles.push(new Fireball(x, y));
+        }
       }
     }
+
     spawnPlatform(){
+      const x = canvas.clientWidth + 80;
+      const seg = this.segmentAtX(x);
+      if(seg && seg.kind==='solid' && seg.slope < -0.05){ return; }
+
       const w = CONFIG.platform.minW + Math.random()*(CONFIG.platform.maxW - CONFIG.platform.minW);
       const y = CONFIG.platform.minY + Math.random()*(CONFIG.platform.maxY - CONFIG.platform.minY);
-      const x = canvas.clientWidth + 80;
       const last = this.platforms[this.platforms.length-1];
-      const gap = last ? (x - (last.x + last.w)) : 200;
-      if(last && gap < 120){ return; }
-      const v = pickPlatformSpikeVariant();
-      this.platforms.push(new Platform(x, w, y, v.under, v.top));
+      if(last){
+        const gap = x - (last.x + last.w);
+        if(gap < 120) return;
+      }
+      this.platforms.push(new Platform(x, w, y));
     }
+
     handleSpawning(dt){
       const speedFactor = this.speed / CONFIG.startSpeed;
-      const obsInterval = Math.max(0.42, CONFIG.spawn.obstacleBaseEvery / speedFactor);
+      const obsInterval  = Math.max(0.42, CONFIG.spawn.obstacleBaseEvery / speedFactor);
       const platInterval = Math.max(0.62, CONFIG.spawn.platformBaseEvery / Math.sqrt(speedFactor));
-      this.spawnTimerObs += dt; this.spawnTimerPlat += dt;
-      if(this.spawnTimerObs >= obsInterval){ this.spawnTimerObs = 0; if(Math.random() < CONFIG.spawn.obstacleProb) this.spawnObstacle(); }
-      if(this.spawnTimerPlat >= platInterval){ this.spawnTimerPlat = 0; if(Math.random() < CONFIG.spawn.platformProb) this.spawnPlatform(); }
+      this.spawnTimerObs  += dt;
+      this.spawnTimerPlat += dt;
+
+      if(this.spawnTimerObs >= obsInterval){
+        this.spawnTimerObs = 0; if(Math.random() < CONFIG.spawn.obstacleProb) this.spawnObstacle();
+      }
+      if(this.spawnTimerPlat >= platInterval){
+        this.spawnTimerPlat = 0; if(Math.random() < CONFIG.spawn.platformProb) this.spawnPlatform();
+      }
     }
+
     update(dt){
-      if(!this.alive){ return; }
-      if(input.pause){ this.freeze = !this.freeze; input.pause=false; }
-      if(this.freeze){ return; }
+      if(this.state !== 'playing') return;
 
       this.time += dt;
       this.speed = clamp(this.speed + CONFIG.speedRampPerSec*dt, CONFIG.startSpeed, CONFIG.maxSpeed);
       this.meters += (this.speed * dt) / 50;
 
+      const W = canvas.clientWidth;
+      while(this.terrain[this.terrain.length-1].right() < W + 600){ this.addSegment(); }
+      for(const seg of this.terrain) seg.update(dt, this.speed);
+      this.terrain = this.terrain.filter(s=> s.right() > -200);
+
+      FRAME_GROUND_Y = this.groundYAt(this.player.x + this.player.w/2);
+
       this.handleSpawning(dt);
 
-      // Update entities
       this.player.update(dt);
       for(const p of this.platforms) p.update(dt, this.speed);
-      for(const o of this.obstacles) o.update(dt, this.speed);
+      for(const o of this.obstacles){
+        if(o instanceof Spike || o instanceof BouncingBoulder || o instanceof RollingBoulder || o instanceof FirePipe){
+          o.update(dt, this.speed, this);
+        }else{
+          o.update(dt, this.speed);
+        }
+      }
 
-      // Cleanup off-screen
       this.platforms = this.platforms.filter(p=> p.x + p.w > -50);
-      this.obstacles = this.obstacles.filter(o=> (o instanceof Spike ? o.x + o.w : o.x + o.r) > -60);
+      this.obstacles = this.obstacles.filter(o=>{
+        const right = (o instanceof Spike) ? (o.x + o.w)
+                     : (o instanceof Fireball) ? (o.x + o.r)
+                     : (o instanceof BouncingBoulder || o instanceof RollingBoulder || o instanceof FirePipe) ? (o.x + 40)
+                     : 0;
+        return right > -60;
+      });
 
-      // Platform logic: top landing, hazards
+      // Platforms & hazards
       const pl = this.player;
       pl.onPlatform = null;
 
       for(const pf of this.platforms){
-        // 1) Hazard: top spikes — if you touch them, you die (crouch doesn't help)
-        if(pf.hasTop && rectsOverlap(pl.rect, pf.topRect)){ return this.die(); }
+        for(const hr of pf.topHazardRects()){ if(rectsOverlap(pl.rect, hr)) return this.die(); }
 
-        // 2) Normal platform top landing (only if no top spikes)
-        const prevY = pl.y - pl.vy*dt;
-        const wasAbove = prevY + pl.h <= pf.y + 2;
-        if(!pf.hasTop && rectsOverlap(pl.rect, pf.rect)){
-          if(wasAbove && pl.vy>=0){
-            pl.y = pf.y - pl.h; pl.vy = 0; pl.onPlatform = pf;
-          }else{
-            if(pl.x + pl.w/2 < pf.x + pf.w/2){ pl.x = pf.x - pl.w - 0.1; } else { pl.x = pf.x + pf.w + 0.1; }
+        if(pl.vy < 0){
+          const headRect = { x: pl.x, y: pl.y, w: pl.w, h: 4 };
+          const barRect  = pf.rect;
+          if(rectsOverlap(headRect, barRect)){
+            let inUnderSpike = false;
+            for(const hr of pf.underHazardRects()){ if(rectsOverlap(headRect, hr)) { inUnderSpike=true; break; } }
+            if(!inUnderSpike){
+              pl.vy = Math.max(pl.vy, 120);
+              pl.y  = pf.y + pf.h + 0.1;
+              pl.bonkTimer = CONFIG.player.bonkDuration;
+            }
           }
         }
 
-        // 3) Hazard: under spikes — only lethal if NOT crouched (forces crouch when passing below)
-        if(pf.hasUnder && rectsOverlap(pl.rect, pf.underRect) && !pl.crouched){
-          return this.die();
+        const prevY = pl.y - pl.vy*dt;
+        const wasAbove = prevY + pl.h <= pf.y + 2;
+        if(rectsOverlap(pl.rect, pf.rect) && wasAbove && pl.vy >= 0){
+          pl.y = pf.y - pl.h; pl.vy = 0; pl.onPlatform = pf;
+        }
+
+        for(const hr of pf.underHazardRects()){
+          if(rectsOverlap(pl.rect, hr) && !pl.crouched){ return this.die(); }
         }
       }
 
-      // Ground/air obstacles
+      // Other hazards
       const pr = pl.rect;
       for(const o of this.obstacles){
         if(o instanceof Spike){
           if(rectsOverlap(pr, o.rect)) return this.die();
         }else if(o instanceof Fireball){
           if(circleRectCollide(o.x, o.y, o.r*0.9, pr.x, pr.y, pr.w, pr.h)) return this.die();
+        }else if(o instanceof BouncingBoulder || o instanceof RollingBoulder){
+          if(circleRectCollide(o.x, o.y, o.r*0.9, pr.x, pr.y, pr.w, pr.h)) return this.die();
+        }else if(o instanceof FirePipe){
+          if(o.on && o.intensity > 0.1){
+            const f = o.flameRect(o.intensity);
+            if(rectsOverlap(pr, f)) return this.die();
+          }
         }
       }
 
-      // HUD
+      if(FRAME_GROUND_Y === null && this.player.y > canvas.clientHeight + 10){
+        return this.die();
+      }
+
       scorePill.textContent = `${Math.floor(this.meters)} m`;
       speedPill.textContent = `Speed ${Math.round(this.speed)}`;
     }
+
     die(){
-      this.alive=false; this.freeze=true;
+      this.state = 'dead';
       const score = Math.floor(this.meters);
       if(score>hiScore){ hiScore=score; localStorage.setItem(HI_KEY, hiScore); hiPill.textContent = `HI ${hiScore} m`; }
-      overlay.innerHTML = `
+      setOverlay(`
         <div class="banner">
           <h1>Game Over</h1>
           <p>Distance: <strong>${score} m</strong> · Top: <strong>${hiScore} m</strong></p>
-          <p>Press <kbd>R</kbd> to restart · <kbd>P</kbd> to pause/resume</p>
-        </div>`;
+          <p><button id="btnRestartGO" class="btn">Restart</button></p>
+          <p><button id="btnMenuGO" class="btn">Main Menu</button></p>
+        </div>`, true);
+      byId('btnRestartGO').onclick = ()=> this.start();
+      byId('btnMenuGO').onclick = ()=> showMenu(this);
     }
+
     draw(g){
       const W = canvas.clientWidth, H = canvas.clientHeight;
       g.clearRect(0,0,W,H);
-
-      // ground
-      g.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--ground').trim() || '#1b2142';
-      g.lineWidth = 4; g.beginPath(); g.moveTo(0, CONFIG.groundY+2); g.lineTo(W, CONFIG.groundY+2); g.stroke();
-
-      // platforms (each draws its own spikes if any)
+      for(const seg of this.terrain) seg.draw(g);
       for(const pf of this.platforms) pf.draw(g);
-
-      // obstacles
       for(const o of this.obstacles) o.draw(g);
-
-      // player
       this.player.draw(g);
 
-      // start/help
-      if(this.time < 1.2){
+      if(this.state==='playing' && this.time < 1.2){
         g.globalAlpha = 1 - this.time/1.2;
         g.fillStyle = '#fff9'; g.font = '600 18px system-ui, sans-serif';
         g.fillText('Press SPACE to jump · C/CTRL to crouch (fast-fall)', 24, 40);
         g.globalAlpha = 1;
       }
-
-      if(!this.alive){
-        g.fillStyle = 'rgba(0,0,0,.15)'; g.fillRect(0,0,W,H);
-      }
     }
+  }
+
+  // ------- Overlay helpers & Menu/Credits -------
+  function byId(id){ return document.getElementById(id); }
+  function setOverlay(html, active=true){
+    overlay.innerHTML = html;
+    overlay.classList.toggle('active', !!active);
+  }
+  function showMenu(inst){
+    inst.state = 'menu';
+    setOverlay(`
+      <div class="banner">
+        <h1>Endless Runner</h1>
+        <p><button id="btnStart" class="btn">Start Game</button></p>
+        <p><button id="btnCredits" class="btn">Credits</button></p>
+      </div>`, true);
+    byId('btnStart').onclick = ()=> inst.start();
+    byId('btnCredits').onclick = ()=> showCredits(inst);
+  }
+  function showCredits(inst){
+    inst.state = 'credits';
+    setOverlay(`
+      <div class="banner">
+        <h1>Credits</h1>
+        <p><!-- intentionally left empty --></p>
+        <p><button id="btnBack" class="btn">Back</button></p>
+      </div>`, true);
+    byId('btnBack').onclick = ()=> showMenu(inst);
   }
 
   const world = new World();
@@ -475,15 +798,30 @@
     const dt = clamp((now - last)/1000, 0, 1/20);
     last = now;
 
-    if(world.alive && !world.freeze){ world.update(dt); }
-    world.draw(ctx);
+    // Pause/Resume toggle always works
+    if(input.pause){
+      if(world.state==='playing') world.pause();
+      else if(world.state==='paused') world.resume();
+      input.pause = false;
+    }
 
-    if(input.restart){ input.restart=false; world.reset(); }
+    // Restart key
+    if(input.restart){
+      input.restart=false;
+      if(world.state==='menu' || world.state==='credits'){ world.start(); }
+      else { world.start(); }
+    }
+
+    world.update(dt);
+    world.draw(ctx);
 
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
+  function byId(id){ return document.getElementById(id); }
+
+  // Click-to-focus for keyboard on some browsers
   canvas.addEventListener('click', ()=> canvas.focus && canvas.focus());
   </script>
 </body>
