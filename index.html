@@ -144,7 +144,7 @@
 
   const HI_KEY = 'endlessRunnerHiScoreV1';
   let hiScore = Number(localStorage.getItem(HI_KEY) || 0);
-  hiPill.textContent = HI ${hiScore} m;
+  hiPill.textContent = `HI ${hiScore} m`;
 
   function fitCanvas(){
     const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
@@ -422,13 +422,13 @@
       }
 
       // HUD
-      scorePill.textContent = ${Math.floor(this.meters)} m;
-      speedPill.textContent = Speed ${Math.round(this.speed)};
+      scorePill.textContent = `${Math.floor(this.meters)} m`;
+      speedPill.textContent = `Speed ${Math.round(this.speed)}`;
     }
     die(){
       this.alive=false; this.freeze=true;
       const score = Math.floor(this.meters);
-      if(score>hiScore){ hiScore=score; localStorage.setItem(HI_KEY, hiScore); hiPill.textContent = HI ${hiScore} m; }
+      if(score>hiScore){ hiScore=score; localStorage.setItem(HI_KEY, hiScore); hiPill.textContent = `HI ${hiScore} m`; }
       overlay.innerHTML = `
         <div class="banner">
           <h1>Game Over</h1>
