@@ -6,20 +6,28 @@
   <title>Slime Run</title>
   <style>
     :root{
-      --bg:#0e1323;         /* deep indigo */
-      --fg:#e6edf3;         /* light text */
-      --accent:#7aa2ff;     /* hud */
-      --danger:#ff6b6b;     /* fireball / flame */
-      --warning:#ffcc66;    /* spikes */
-      --ground:#1b2142;     /* ground line */
-      --platform:#2c3463;   /* floating platforms */
-      --player:#6EE7B7;     /* minty jelly */
-      --pipe:#6b7280;       /* fire pipe */
+      --bg:#0e1323;
+      --fg:#e6edf3;
+      --accent:#7aa2ff;
+      --danger:#ff6b6b;
+      --warning:#ffcc66;
+      --ground:#1b2142;
+      --platform:#2c3463;
+
+      /* CHANGE #A: use warm yellow jelly + highlights */
+      --player:#ffd44d;             /* body mid tone */
+      --player-hi:#fff4b3;          /* top highlight */
+      --player-deep:#f4a31b;        /* bottom depth */
+      --player-spec:#ffffff;        /* glossy specular */
+      --pipe:#6b7280;
     }
     html,body{height:100%; margin:0; background:var(--bg); color:var(--fg); font-family:system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif}
     #wrap{display:grid; place-items:center; height:100%;}
-    canvas{background:linear-gradient(180deg, #0d1327 0%, #11183a 60%, #0d1327 100%);
-           box-shadow:0 10px 40px rgba(0,0,0,.5); border-radius:14px; max-width:100vw; max-height:100vh}
+    canvas{
+      background:linear-gradient(180deg, #0d1327 0%, #11183a 60%, #0d1327 100%);
+      box-shadow:0 10px 40px rgba(0,0,0,.5);
+      border-radius:14px; max-width:100vw; max-height:100vh
+    }
     .hud{position:fixed; inset:12px 12px auto auto; display:flex; gap:12px; align-items:center;}
     .hud .pill{background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); padding:8px 12px; border-radius:999px; font-weight:600}
     .help{position:fixed; left:12px; bottom:12px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:10px 12px; line-height:1.5}
@@ -57,9 +65,9 @@
   const CONFIG = {
     gravity: 2000,
     jumpVelocity: 900,
-    maxCoyoteTime: 90,            // ms
+    maxCoyoteTime: 90,
     baseGroundY: 520,
-    topClampY: 48,                // keep player on screen
+    topClampY: 48,
     startSpeed: 300,
     maxSpeed: 1200,
     speedRampPerSec: 16,
@@ -81,21 +89,24 @@
       minY: 420, maxY: 540
     },
     player: {
-      w: 46, h: 72,
-      crouchH: 40,
+      w: 92,          // wider so the cap reads round
+      h: 70,         // taller
+      crouchH: 60,
       x: 200,
       invulnBlinkMs: 100,
       maxAirTime: 1.0,
       holdGravityFactor: 0.35,
       jumpCutFactor: 0.45,
-      fastFallMultiplier: 2.4,
-      slimeRiseStretch: 0.20,
-      slimeFallSquash: 0.25,
+      fastFallMultiplier: 2.2,
+      // keep morph subtle so top stays dome-like
+      slimeRiseStretch: 0.08,
+      slimeFallSquash: 0.10,
       slimeLerpRate: 10,
-      bonkSquashX: 1.25,
-      bonkSquashY: 0.78,
-      bonkDuration: 0.18
+      bonkSquashX: 1.08,
+      bonkSquashY: 0.92,
+      bonkDuration: 0.14
     },
+
     fireball: {
       radius: 18,
       wobbleAmp: 12,
@@ -106,13 +117,7 @@
       base: 38, height: 36,
       color: getComputedStyle(document.documentElement).getPropertyValue('--warning').trim() || '#ffcc66'
     },
-    boulder: {
-      rMin: 16, rMax: 22,
-      minBounceH: 100,
-      maxBounceH: 150,
-      driftMin: 120,
-      driftMax: 220
-    },
+    boulder: { rMin: 16, rMax: 22, minBounceH: 100, maxBounceH: 150, driftMin: 120, driftMax: 220 },
     rollBoulder: { r: 22, rollBoost: 200 },
     platform: {
       minW: 120, maxW: 260,
@@ -141,16 +146,6 @@
   function circleRectCollide(cx, cy, r, rx, ry, rw, rh){
     const nx = clamp(cx, rx, rx+rw); const ny = clamp(cy, ry, ry+rh);
     const dx = cx - nx, dy = cy - ny; return (dx*dx + dy*dy) <= r*r;
-  }
-  function roundRectPath(g, x, y, w, h, r){
-    r = Math.min(r, w/2, h/2);
-    g.beginPath();
-    g.moveTo(x+r, y);
-    g.arcTo(x+w, y,   x+w, y+h, r);
-    g.arcTo(x+w, y+h, x,   y+h, r);
-    g.arcTo(x,   y+h, x,   y,   r);
-    g.arcTo(x,   y,   x+w, y,   r);
-    g.closePath();
   }
   const randInt=(a,b)=> (a+Math.floor(Math.random()*(b-a+1)));
   const randRange=(a,b)=> (a + Math.random()*(b-a));
@@ -261,171 +256,162 @@
     }
   }
 
-  // ======= HAZARDS =======
-  class Spike{
-    constructor(x){ this.w = CONFIG.spike.base; this.h = CONFIG.spike.height; this.x=x; this.y = CONFIG.baseGroundY - this.h; }
-    get rect(){ return {x:this.x, y:this.y, w:this.w, h:this.h}; }
-    update(dt,speed,world){
-      this.x -= speed*dt;
-      const gy = world.groundYAt(this.x + this.w/2);
-      if(gy !== null) this.y = gy - this.h;
-    }
-    draw(g){
-      g.fillStyle = CONFIG.spike.color;
-      g.beginPath(); g.moveTo(this.x, this.y+this.h);
-      g.lineTo(this.x+this.w/2, this.y);
-      g.lineTo(this.x+this.w, this.y+this.h);
-      g.closePath(); g.fill();
-    }
-  }
-
-  class Fireball{
-    constructor(x, baseY){ this.r = CONFIG.fireball.radius; this.x=x; this.baseY=baseY; this.t=0; }
+  // ======= HAZARDS (unchanged) =======
+  class Spike{ constructor(x){ this.w=CONFIG.spike.base; this.h=CONFIG.spike.height; this.x=x; this.y=CONFIG.baseGroundY-this.h; }
+    get rect(){ return {x:this.x,y:this.y,w:this.w,h:this.h}; }
+    update(dt,speed,world){ this.x-=speed*dt; const gy=world.groundYAt(this.x+this.w/2); if(gy!==null) this.y=gy-this.h; }
+    draw(g){ g.fillStyle=CONFIG.spike.color; g.beginPath(); g.moveTo(this.x,this.y+this.h); g.lineTo(this.x+this.w/2,this.y); g.lineTo(this.x+this.w,this.y+this.h); g.closePath(); g.fill(); } }
+  class Fireball{ constructor(x,baseY){ this.r=CONFIG.fireball.radius; this.x=x; this.baseY=baseY; this.t=0; }
     get y(){ return this.baseY + Math.sin(this.t*CONFIG.fireball.wobbleFreq*2*Math.PI)*CONFIG.fireball.wobbleAmp; }
-    get rect(){ return {x:this.x-this.r, y:this.y-this.r, w:this.r*2, h:this.r*2}; }
-    update(dt,speed){ this.t+=dt; this.x -= (speed * 1.25 + 120) * dt; }
-    draw(g){
-      const y = this.y;
-      g.beginPath(); g.arc(this.x, y, this.r, 0, Math.PI*2);
-      const grd = g.createRadialGradient(this.x, y, 4, this.x, y, this.r);
-      grd.addColorStop(0,'#fff1'); grd.addColorStop(0.2,'#fff6'); grd.addColorStop(0.5, CONFIG.fireball.color); grd.addColorStop(1,'#d22');
-      g.fillStyle = grd; g.fill();
-      g.globalAlpha = 0.22; g.fillStyle = CONFIG.fireball.color;
-      g.beginPath(); g.ellipse(this.x+this.r*0.9, y, this.r*1.9, this.r*0.85, 0, 0, Math.PI*2); g.fill(); g.globalAlpha=1;
-    }
-  }
-
-  class BouncingBoulder{
-    constructor(x, y){
-      this.r = randInt(CONFIG.boulder.rMin, CONFIG.boulder.rMax);
-      this.x = x; this.y = y; this.vy = 0;
-      this.drift = randRange(CONFIG.boulder.driftMin, CONFIG.boulder.driftMax);
-    }
-    get rect(){ return {x:this.x-this.r, y:this.y-this.r, w:this.r*2, h:this.r*2}; }
-    update(dt, speed, world){
-      this.vy += CONFIG.gravity * dt;
-      this.y  += this.vy * dt;
-      this.x  -= (speed + this.drift) * dt;
-      const gy = world.groundYAt(this.x);
-      if(gy !== null && this.y + this.r >= gy){
-        this.y = gy - this.r;
-        const H = randRange(CONFIG.boulder.minBounceH, CONFIG.boulder.maxBounceH);
-        const vyUp = Math.sqrt(2 * CONFIG.gravity * H);
-        this.vy = -vyUp;
-      }
-    }
-    draw(g){
-      g.beginPath(); g.arc(this.x, this.y, this.r, 0, Math.PI*2);
-      const grd = g.createRadialGradient(this.x-this.r*0.3, this.y-this.r*0.3, this.r*0.2, this.x, this.y, this.r);
-      grd.addColorStop(0,'#fff6'); grd.addColorStop(0.2,'#bbb'); grd.addColorStop(1,'#666');
-      g.fillStyle = grd; g.fill();
-    }
-  }
-
-  class RollingBoulder{
-    constructor(x, y){ this.r = CONFIG.rollBoulder.r; this.x = x; this.y = y; }
-    get rect(){ return {x:this.x-this.r, y:this.y-this.r, w:this.r*2, h:this.r*2}; }
-    update(dt, speed, world){
-      this.x -= (speed + CONFIG.rollBoulder.rollBoost) * dt;
-      const gy = world.groundYAt(this.x);
-      if(gy !== null) this.y = gy - this.r;
-      else { this.y += CONFIG.gravity * dt * dt; }
-    }
-    draw(g){
-      g.beginPath(); g.arc(this.x, this.y, this.r, 0, Math.PI*2);
-      g.fillStyle = '#7a7a7a'; g.fill();
-      g.fillStyle = '#ffffff55'; g.beginPath(); g.arc(this.x-this.r*0.4, this.y-this.r*0.4, this.r*0.5, 0, Math.PI*2); g.fill();
-    }
-  }
-
-  class FirePipe{
-    constructor(x, flameH){
-      this.x = x; this.y = CONFIG.baseGroundY;
-      this.w = CONFIG.pipe.w; this.h = CONFIG.pipe.h;
-      this.flameH = flameH;
-      this.timer = Math.random() * (CONFIG.pipe.onTime + CONFIG.pipe.cooldown);
-      this.on = Math.random() < 0.5;
-      this.intensity = this.on ? 1 : 0;
-      this.anim = 0; this.seed = Math.random()*Math.PI*2;
-    }
-    baseRect(){ return {x:this.x - this.w/2, y:this.y - this.h, w:this.w, h:this.h}; }
-    flameRect(scale=1){
-      const frW = CONFIG.pipe.flameW;
-      const h = this.flameH * scale;
-      return {x:this.x - frW/2, y:this.y - this.h - h, w:frW, h:h};
-    }
-    update(dt, speed, world){
-      this.anim += dt;
-      this.x -= speed*dt;
-      const gy = world.groundYAt(this.x);
-      this.y = (gy !== null) ? gy : CONFIG.baseGroundY;
-
-      this.timer -= dt;
-      if(this.on && this.timer <= 0){ this.on = false; this.timer = CONFIG.pipe.cooldown; }
-      else if(!this.on && this.timer <= 0){ this.on = true; this.timer = CONFIG.pipe.onTime; }
-
-      const target = this.on ? 1 : 0;
-      const k = Math.min(1, CONFIG.pipe.fadeRate*dt);
-      this.intensity += (target - this.intensity) * k;
-    }
-    draw(g){
-      const b = this.baseRect();
-      g.fillStyle = CONFIG.pipe.color; g.fillRect(b.x, b.y, b.w, b.h);
-      g.fillStyle = '#9aa3b2'; g.fillRect(b.x-2, b.y-4, b.w+4, 4);
-
-      if(this.intensity > 0.02){
-        const scale = this.intensity;
-        const flicker = 0.08 * Math.sin(this.anim*12 + this.seed) + 0.05 * Math.sin(this.anim*7 + this.seed*1.7);
-        const h = this.flameH * (0.85 + 0.15*scale) * (1 + flicker);
-        const w = CONFIG.pipe.flameW * (0.9 + 0.3*scale * (1 - 0.5*Math.sin(this.anim*9 + this.seed)));
-
-        const x = this.x, baseY = this.y - this.h;
-        g.beginPath();
-        g.moveTo(x - w*0.5, baseY);
-        g.quadraticCurveTo(x - w*0.25, baseY - h*0.45*(1+0.2*Math.sin(this.anim*6+this.seed)),
-                           x,           baseY - h);
-        g.quadraticCurveTo(x + w*0.25, baseY - h*0.45*(1-0.2*Math.sin(this.anim*5+this.seed*0.9)),
-                           x + w*0.5,   baseY);
+    get rect(){ return {x:this.x-this.r,y:this.y-this.r,w:this.r*2,h:this.r*2}; }
+    update(dt,speed){ this.t+=dt; this.x -= (speed*1.25 + 120)*dt; }
+    draw(g){ const y=this.y; g.beginPath(); g.arc(this.x,y,this.r,0,Math.PI*2);
+      const grd= g.createRadialGradient(this.x,y,4,this.x,y,this.r);
+      grd.addColorStop(0,'#fff1'); grd.addColorStop(0.2,'#fff6'); grd.addColorStop(0.5,CONFIG.fireball.color); grd.addColorStop(1,'#d22');
+      g.fillStyle=grd; g.fill();
+      g.globalAlpha=0.22; g.fillStyle=CONFIG.fireball.color;
+      g.beginPath(); g.ellipse(this.x+this.r*0.9, y, this.r*1.9, this.r*0.85, 0, 0, Math.PI*2); g.fill(); g.globalAlpha=1; } }
+  class BouncingBoulder{ constructor(x,y){ this.r=randInt(CONFIG.boulder.rMin,CONFIG.boulder.rMax); this.x=x; this.y=y; this.vy=0; this.drift=randRange(CONFIG.boulder.driftMin,CONFIG.boulder.driftMax); }
+    get rect(){ return {x:this.x-this.r,y:this.y-this.r,w:this.r*2,h:this.r*2}; }
+    update(dt,speed,world){ this.vy+=CONFIG.gravity*dt; this.y+=this.vy*dt; this.x-=(speed+this.drift)*dt;
+      const gy=world.groundYAt(this.x); if(gy!==null && this.y+this.r>=gy){ this.y=gy-this.r; const H=randRange(CONFIG.boulder.minBounceH,CONFIG.boulder.maxBounceH); this.vy=-Math.sqrt(2*CONFIG.gravity*H);} }
+    draw(g){ g.beginPath(); g.arc(this.x,this.y,this.r,0,Math.PI*2);
+      const grd=g.createRadialGradient(this.x-this.r*0.3,this.y-this.r*0.3,this.r*0.2,this.x,this.y,this.r);
+      grd.addColorStop(0,'#fff6'); grd.addColorStop(0.2,'#bbb'); grd.addColorStop(1,'#666'); g.fillStyle=grd; g.fill(); } }
+  class RollingBoulder{ constructor(x,y){ this.r=CONFIG.rollBoulder.r; this.x=x; this.y=y; }
+    get rect(){ return {x:this.x-this.r,y:this.y-this.r,w:this.r*2,h:this.r*2}; }
+    update(dt,speed,world){ this.x-=(speed+CONFIG.rollBoulder.rollBoost)*dt; const gy=world.groundYAt(this.x); if(gy!==null) this.y=gy-this.r; else this.y+=CONFIG.gravity*dt*dt; }
+    draw(g){ g.beginPath(); g.arc(this.x,this.y,this.r,0,Math.PI*2); g.fillStyle='#7a7a7a'; g.fill(); g.fillStyle='#ffffff55';
+      g.beginPath(); g.arc(this.x-this.r*0.4,this.y-this.r*0.4,this.r*0.5,0,Math.PI*2); g.fill(); } }
+  class FirePipe{ constructor(x,flameH){ this.x=x; this.y=CONFIG.baseGroundY; this.w=CONFIG.pipe.w; this.h=CONFIG.pipe.h; this.flameH=flameH;
+      this.timer=Math.random()*(CONFIG.pipe.onTime+CONFIG.pipe.cooldown); this.on=Math.random()<0.5; this.intensity=this.on?1:0; this.anim=0; this.seed=Math.random()*Math.PI*2; }
+    baseRect(){ return {x:this.x-this.w/2,y:this.y-this.h,w:this.w,h:this.h}; }
+    flameRect(scale=1){ const frW=CONFIG.pipe.flameW; const h=this.flameH*scale; return {x:this.x-frW/2,y:this.y-this.h-h,w:frW,h:h}; }
+    update(dt,speed,world){ this.anim+=dt; this.x-=speed*dt; const gy=world.groundYAt(this.x); this.y=(gy!==null)?gy:CONFIG.baseGroundY;
+      this.timer-=dt; if(this.on && this.timer<=0){ this.on=false; this.timer=CONFIG.pipe.cooldown; } else if(!this.on && this.timer<=0){ this.on=true; this.timer=CONFIG.pipe.onTime; }
+      const target=this.on?1:0; const k=Math.min(1,CONFIG.pipe.fadeRate*dt); this.intensity+=(target-this.intensity)*k; }
+    draw(g){ const b=this.baseRect(); g.fillStyle=CONFIG.pipe.color; g.fillRect(b.x,b.y,b.w,b.h); g.fillStyle='#9aa3b2'; g.fillRect(b.x-2,b.y-4,b.w+4,4);
+      if(this.intensity>0.02){ const scale=this.intensity;
+        const flicker=0.08*Math.sin(this.anim*12+this.seed)+0.05*Math.sin(this.anim*7+this.seed*1.7);
+        const h=this.flameH*(0.85+0.15*scale)*(1+flicker); const w=CONFIG.pipe.flameW*(0.9+0.3*scale*(1-0.5*Math.sin(this.anim*9+this.seed)));
+        const x=this.x, baseY=this.y-this.h;
+        g.beginPath(); g.moveTo(x-w*0.5,baseY);
+        g.quadraticCurveTo(x-w*0.25, baseY-h*0.45*(1+0.2*Math.sin(this.anim*6+this.seed)), x, baseY-h);
+        g.quadraticCurveTo(x+w*0.25, baseY-h*0.45*(1-0.2*Math.sin(this.anim*5+this.seed*0.9)), x+w*0.5, baseY);
         g.closePath();
-
-        const grd = g.createLinearGradient(x, baseY-h, x, baseY);
-        grd.addColorStop(0,   '#ffe082');
-        grd.addColorStop(0.35,'#ffb74d');
-        grd.addColorStop(0.7, '#ff6b6b');
-        grd.addColorStop(1,   '#b91c1c');
-        g.fillStyle = grd;
-        g.globalAlpha = clamp(0.3 + 0.7*scale, 0, 1);
-        g.fill();
-        g.globalAlpha = 1;
-      }
-    }
-  }
-
-  // ======= (NEW) BLOBBY PATH FOR STICKER-SLIME =======
-  // A chubby jelly blob with a wider, spreading base.
-  // spread: 0..0.45 (how much the base spreads)
-  function blobPath(g, w, h, spread=0.2, tilt=0){
-    const topR   = w * 0.42;
-    const baseR  = w * (0.55 + spread);
-    const topY   = -h * 0.62;
-    const baseY  =  h * 0.38;
-
-    g.save();
-    g.rotate(tilt);
-
-    g.beginPath();
-    g.moveTo(0, topY);
-    g.bezierCurveTo(-topR, topY, -baseR*0.95, -h*0.15, -baseR, baseY*0.35);
-    g.bezierCurveTo(-baseR*1.02, baseY*0.72, -baseR*0.55, baseY, 0, baseY);
-    g.bezierCurveTo(baseR*0.55, baseY, baseR*1.02, baseY*0.72, baseR, baseY*0.35);
-    g.bezierCurveTo(baseR*0.95, -h*0.15, topR, topY, 0, topY);
-    g.closePath();
-
-    g.restore();
+        const grd=g.createLinearGradient(x,baseY-h,x,baseY);
+        grd.addColorStop(0,'#ffe082'); grd.addColorStop(0.35,'#ffb74d'); grd.addColorStop(0.7,'#ff6b6b'); grd.addColorStop(1,'#b91c1c');
+        g.fillStyle=grd; g.globalAlpha=Math.max(0.3, Math.min(1,0.3+0.7*scale)); g.fill(); g.globalAlpha=1; } }
   }
 
   // ======= PLAYER =======
   let FRAME_GROUND_Y = CONFIG.baseGroundY;
+
+  /* ROUND DOME + MELTY FEET, 2 INTERNAL HIGHLIGHTS ONLY */
+  function drawJellySticker(g, w, h, blink){
+    const body = getComputedStyle(document.documentElement).getPropertyValue('--player').trim() || '#ffd44d';
+    const hi   = getComputedStyle(document.documentElement).getPropertyValue('--player-hi').trim() || '#fff4b3';
+    const deep = getComputedStyle(document.documentElement).getPropertyValue('--player-deep').trim() || '#f4a31b';
+    const spec = getComputedStyle(document.documentElement).getPropertyValue('--player-spec').trim() || '#ffffff';
+
+    // soft ground shadow
+    g.globalAlpha = 0.22;
+    g.beginPath(); g.ellipse(0, h*0.70, w*0.80, 13, 0, 0, Math.PI*2); g.fillStyle = '#000'; g.fill();
+    g.globalAlpha = 1;
+
+    // ---------- BODY PATH (round dome + melty skirt) ----------
+    const baseY   = h*0.40;   // where skirt starts
+    const footH   = h*0.14;   // skirt height
+    const tailH   = h*0.18;   // right tail drop depth
+
+    g.beginPath();
+    // left base edge
+    g.moveTo(-w*0.56, baseY);
+
+    /* ROUND DOME (make it domier by keeping the top lower and CPs closer in X) */
+    g.bezierCurveTo(-w*0.56, baseY*0.46, -w*0.26, -h*0.42, 0, -h*0.44);
+    g.bezierCurveTo( w*0.26, -h*0.42,  w*0.56, baseY*0.46,  w*0.56, baseY);
+
+    /* ----- MELTY SKIRT SHAPE ----- */
+    /* Left foot bump */
+    g.quadraticCurveTo(-w*0.42, baseY + footH*0.55, -w*0.46, baseY + footH);
+    g.quadraticCurveTo(-w*0.30, baseY + footH*0.75, -w*0.18, baseY + footH*0.60);
+
+    /* Center belly sag */
+    g.quadraticCurveTo( 0,       baseY + footH*0.95,  w*0.18, baseY + footH*0.60);
+
+    /* Right foot / small tail dripping down a bit more */
+    g.quadraticCurveTo( w*0.34, baseY + footH*0.70,  w*0.40, baseY + footH);
+    g.quadraticCurveTo( w*0.56, baseY + tailH*0.85,  w*0.62, baseY + tailH);
+
+    /* Return under the skirt to close (gives thickness and a rounded bottom edge) */
+    g.quadraticCurveTo( w*0.44, baseY + footH*0.88,  w*0.36, baseY + footH*0.58);
+    g.quadraticCurveTo( w*0.18, baseY + footH*0.28,  0,       baseY + footH*0.32);
+    g.quadraticCurveTo(-w*0.18, baseY + footH*0.28, -w*0.36,  baseY + footH*0.58);
+    g.quadraticCurveTo(-w*0.48, baseY + footH*0.88, -w*0.56,  baseY);
+    g.closePath();
+
+    // fill (no border)
+    const grd = g.createLinearGradient(0, -h*0.65, 0, baseY + tailH);
+    grd.addColorStop(0, hi);
+    grd.addColorStop(0.35, body);
+    grd.addColorStop(1, deep);
+    g.fillStyle = grd;
+    g.fill();
+
+    /* subtle inner rim */
+    g.globalAlpha = 0.12; g.lineWidth = 2; g.strokeStyle = '#ffffff'; g.stroke(); g.globalAlpha = 1;
+
+
+    // ---------- INTERNAL HIGHLIGHTS (clipped so they never spill outside) ----------
+    g.save();
+    // clip to the body we just drew
+    g.clip();
+
+    g.fillStyle = spec;
+    g.globalAlpha = 0.9;
+    // highlight #1 (top-left)
+    g.beginPath(); g.ellipse(-w*0.18, -h*0.38, 18, 12, 0.2, 0, Math.PI*2); g.fill();
+    g.globalAlpha = 0.75;
+    // highlight #2 (upper-mid-right)
+    g.beginPath(); g.ellipse( w*0.10, -h*0.46, 12, 8, -0.2, 0, Math.PI*2); g.fill();
+    g.globalAlpha = 1;
+
+    g.restore(); // end clip
+
+    // ---------- FACE (smaller eyes) ----------
+    const eyeY = -h*0.02;
+    const eyeR = 8.5;
+    g.fillStyle = '#2b1e12';
+    g.beginPath(); g.ellipse(-w*0.20, eyeY, eyeR*0.80, eyeR, 0, 0, Math.PI*2); g.fill();
+    g.beginPath(); g.ellipse( w*0.20, eyeY, eyeR*0.80, eyeR, 0, 0, Math.PI*2); g.fill();
+
+    // blink squash
+    if(blink>0){
+      const s = Math.max(0.18, 1 - blink);
+      g.save(); g.translate(-w*0.20, eyeY); g.scale(1, s);
+      g.beginPath(); g.arc(0,0,eyeR*0.9,0,Math.PI*2); g.fill(); g.restore();
+      g.save(); g.translate( w*0.20, eyeY); g.scale(1, s);
+      g.beginPath(); g.arc(0,0,eyeR*0.9,0,Math.PI*2); g.fill(); g.restore();
+    }
+
+    // tiny sparkles inside eyes
+    g.fillStyle = spec;
+    g.beginPath(); g.ellipse(-w*0.24, eyeY-6, 3.2, 4.2, 0, 0, Math.PI*2); g.fill();
+    g.beginPath(); g.ellipse( w*0.16, eyeY-6, 3.2, 4.2, 0, 0, Math.PI*2); g.fill();
+
+    // blush
+    g.globalAlpha = 0.30; g.fillStyle = '#ff86a7';
+    g.beginPath(); g.ellipse(-w*0.33, eyeY+12, 13, 6.5, 0, 0, Math.PI*2); g.fill();
+    g.beginPath(); g.ellipse( w*0.33, eyeY+12, 13, 6.5, 0, 0, Math.PI*2); g.fill();
+    g.globalAlpha = 1;
+
+    // smile
+    g.strokeStyle = '#2b1e12'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(-12, eyeY+18); g.quadraticCurveTo(0, eyeY+24, 12, eyeY+18); g.stroke();
+  }
+
+
   class Player{
     constructor(){
       this.x = CONFIG.player.x; this.y = CONFIG.baseGroundY - CONFIG.player.h;
@@ -434,13 +420,9 @@
       this.airTime = 0; this.jumpCutApplied = false;
       this.scaleX = 1; this.scaleY = 1;
       this.bonkTimer = 0;
-
-      // cute face blink
       this.blinkTimer = 0.4 + Math.random()*2.5;
       this.blink = 0;
-
-      // (NEW) landing pulse
-      this.landPulse = 0;   // 0..1 quick spread on land
+      this.landPulse = 0;
     }
     get rect(){ return {x:this.x, y:this.y, w:this.w, h:this.h}; }
     update(dt){
@@ -469,16 +451,14 @@
       }
       if(!this.onGround && !this.onPlatform && input.crouch){ g *= CONFIG.player.fastFallMultiplier; }
 
-      // integrate
       this.vy += g * dt; this.y += this.vy * dt;
 
       if(this.y < CONFIG.topClampY){ this.y = CONFIG.topClampY; if(this.vy < 0) this.vy = 0; }
 
-      // landing detection
       const wasAir = !(this.onGround || this.onPlatform);
       if(FRAME_GROUND_Y !== null && this.y + this.h >= FRAME_GROUND_Y){
         this.y = FRAME_GROUND_Y - this.h; this.vy = 0;
-        if(wasAir) this.landPulse = 1; // (NEW) trigger cute spread
+        if(wasAir) this.landPulse = 1;
         if(!this.onGround && !this.onPlatform) this.onGround=true;
         this.airTime = 0; this.jumpCutApplied = false;
       }else{
@@ -491,12 +471,12 @@
         this.coyoteMs -= dt*1000; if(this.coyoteMs<0) this.coyoteMs=0;
       }
 
-      // squash & stretch targets
+      // squash/stretch — kept subtle for the cute sticker look
       let tx=1, ty=1;
-      if(this.crouched){ tx=1.15; ty=0.75; }
+      if(this.crouched){ tx=1.08; ty=0.88; }
       else {
-        const rise = clamp(-this.vy * 0.0005, 0, CONFIG.player.slimeRiseStretch);
-        const fall = clamp(this.vy * 0.0006, 0, CONFIG.player.slimeFallSquash);
+        const rise = clamp(-this.vy * 0.00035, 0, CONFIG.player.slimeRiseStretch);
+        const fall = clamp(this.vy * 0.00040, 0, CONFIG.player.slimeFallSquash);
         const morph = rise - fall; ty = 1 + morph; tx = 1 - morph;
       }
       if(this.bonkTimer>0){ tx = Math.max(tx, CONFIG.player.bonkSquashX); ty = Math.min(ty, CONFIG.player.bonkSquashY); }
@@ -504,86 +484,30 @@
       this.scaleX += (tx - this.scaleX) * k;
       this.scaleY += (ty - this.scaleY) * k;
 
-      // decay landing pulse
+      // landing pulse
       this.landPulse = Math.max(0, this.landPulse - dt*6);
 
-      // blink timing
+      // blink timer
       this.blinkTimer -= dt;
       if(this.blinkTimer <= 0){ this.blinkTimer = 2.0 + Math.random()*3.0; this.blink = 1; }
       if(this.blink > 0){ this.blink = Math.max(0, this.blink - dt*8); }
     }
 
-    // ======= (NEW) glossy sticker-slime rendering =======
-    draw(g, t=0){
-  const w=this.w, h=this.h;
-  const bodyColor = getComputedStyle(document.documentElement)
-      .getPropertyValue('--player').trim() || '#00e0e0';
+    /* CHANGE #C: new cute yellow jelly with sticker outline */
+    /* CHANGE #G — rounder look by clamping the scale; call new renderer */
+  draw(g){
+    const w=this.w, h=this.h;
 
-  // ---- base shadow ----
-  const baseSpread = (this.onGround ? 0.25 : 0.1) + this.landPulse*0.35;
-  const shadowW = w*(1.0 + baseSpread*1.5);
-  g.globalAlpha = 0.25;
-  g.beginPath(); g.ellipse(this.x + w/2, this.y + h + 8, shadowW, 10, 0, 0, Math.PI*2);
-  g.fillStyle = '#000'; g.fill(); g.globalAlpha = 1;
+    // very subtle squash/stretch to avoid triangle shape
+    const tx = clamp(this.scaleX, 0.93, 1.08);
+    const ty = clamp(this.scaleY, 0.93, 1.08);
 
-  // ---- slime body ----
-  g.save();
-  g.translate(this.x + w/2, this.y + h*0.6);
-
-  g.beginPath();
-  g.moveTo(-w*0.55, h*0.35);
-  g.bezierCurveTo(-w*0.7, h*0.0, -w*0.5, -h*0.5, 0, -h*0.7);
-  g.bezierCurveTo(w*0.5, -h*0.5, w*0.7, h*0.0, w*0.55, h*0.35);
-  g.closePath();
-
-  // cyan jelly gradient
-  const grad = g.createLinearGradient(0,-h*0.7, 0,h*0.35);
-  grad.addColorStop(0, '#b9ffff');   // bright top
-  grad.addColorStop(0.3, bodyColor); // main cyan
-  grad.addColorStop(1, '#008c8c');   // darker bottom
-  g.fillStyle = grad; g.fill();
-
-  // highlight gloss
-  g.fillStyle = '#fff';
-  g.globalAlpha = 0.7;
-  g.beginPath(); g.ellipse(-w*0.2, -h*0.45, 18, 12, 0.3, 0, Math.PI*2); g.fill();
-  g.globalAlpha = 0.9;
-  g.beginPath(); g.ellipse(-w*0.1, -h*0.55, 10, 6, -0.2, 0, Math.PI*2); g.fill();
-  g.globalAlpha = 1;
-
-  // face
-  const eyeY=-h*0.1, eyeLX=-w*0.18, eyeRX=w*0.18;
-  g.fillStyle = '#0a2b28';
-  g.beginPath(); g.ellipse(eyeLX, eyeY, 9, 12, 0, 0, Math.PI*2); g.fill();
-  g.beginPath(); g.ellipse(eyeRX, eyeY, 9, 12, 0, 0, Math.PI*2); g.fill();
-
-  g.fillStyle = '#fff';
-  g.beginPath(); g.ellipse(eyeLX-2, eyeY-4, 3, 4, 0, 0, Math.PI*2); g.fill();
-  g.beginPath(); g.ellipse(eyeRX-2, eyeY-4, 3, 4, 0, 0, Math.PI*2); g.fill();
-
-  // blush
-  g.fillStyle = '#ff80a5';
-  g.globalAlpha = 0.35;
-  g.beginPath(); g.ellipse(-w*0.32, eyeY+14, 12, 6, 0, 0, Math.PI*2); g.fill();
-  g.beginPath(); g.ellipse( w*0.32, eyeY+14, 12, 6, 0, 0, Math.PI*2); g.fill();
-  g.globalAlpha = 1;
-
-  // smile
-  g.strokeStyle = '#0a2b28'; g.lineWidth=2;
-  g.beginPath(); g.moveTo(-10, eyeY+22);
-  g.quadraticCurveTo(0, eyeY+28, 10, eyeY+22); g.stroke();
-
-  // side droplets
-  if(this.onGround && this.landPulse>0.05){
-    const k=this.landPulse;
-    g.fillStyle = bodyColor; g.globalAlpha=0.8*k;
-    g.beginPath(); g.ellipse(-w*0.6, h*0.35, 10+6*k, 6+2*k, 0, 0, Math.PI*2); g.fill();
-    g.beginPath(); g.ellipse( w*0.6, h*0.35, 10+6*k, 6+2*k, 0, 0, Math.PI*2); g.fill();
-    g.globalAlpha=1;
+    g.save();
+    g.translate(this.x + w/2, this.y + h*0.56);
+    g.scale(tx, ty);
+    drawJellySticker(g, w, h, 1-this.blink);
+    g.restore();
   }
-
-  g.restore();
-}
 
   }
 
@@ -778,7 +702,6 @@
         return right > -60;
       });
 
-      // Platforms & hazards
       const pl = this.player;
       pl.onPlatform = null;
 
@@ -810,7 +733,6 @@
         }
       }
 
-      // Other hazards
       const pr = pl.rect;
       for(const o of this.obstacles){
         if(o instanceof Spike){
@@ -857,8 +779,7 @@
       for(const pf of this.platforms) pf.draw(g);
       for(const o of this.obstacles) o.draw(g);
 
-      // time → gentle bob on face
-      this.player.draw(g, this.time);
+      this.player.draw(g);
 
       if(this.state==='playing' && this.time < 1.2){
         g.globalAlpha = 1 - this.time/1.2;
@@ -922,7 +843,6 @@
   }
   requestAnimationFrame(frame);
 
-  // Click-to-focus for keyboard on some browsers
   canvas.addEventListener('click', ()=> canvas.focus && canvas.focus());
   </script>
 </body>
