@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Endless Runner — 2D Subway Surfers Style</title>
+  <title>Slime Run</title>
   <style>
     :root{
       --bg:#0e1323;         /* deep indigo */
@@ -13,7 +13,7 @@
       --warning:#ffcc66;    /* spikes */
       --ground:#1b2142;     /* ground line */
       --platform:#2c3463;   /* floating platforms */
-      --player:#4be4c9;     /* player color */
+      --player:#6EE7B7;     /* minty jelly */
       --pipe:#6b7280;       /* fire pipe */
     }
     html,body{height:100%; margin:0; background:var(--bg); color:var(--fg); font-family:system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif}
@@ -160,7 +160,7 @@
   addEventListener('keydown', e=>{
     if(['Space','ArrowUp','KeyW'].includes(e.code)){ input.up=true; e.preventDefault(); }
     if(['ArrowDown','ControlLeft','ControlRight','KeyC'].includes(e.code)){ input.down=true; input.crouch=true; e.preventDefault(); }
-    if(e.code==='KeyP'){ input.pause = true; }  // handled in frame loop
+    if(e.code==='KeyP'){ input.pause = true; }
     if(e.code==='KeyR'){ input.restart = true; }
   });
   addEventListener('keyup', e=>{
@@ -401,6 +401,29 @@
     }
   }
 
+  // ======= (NEW) BLOBBY PATH FOR STICKER-SLIME =======
+  // A chubby jelly blob with a wider, spreading base.
+  // spread: 0..0.45 (how much the base spreads)
+  function blobPath(g, w, h, spread=0.2, tilt=0){
+    const topR   = w * 0.42;
+    const baseR  = w * (0.55 + spread);
+    const topY   = -h * 0.62;
+    const baseY  =  h * 0.38;
+
+    g.save();
+    g.rotate(tilt);
+
+    g.beginPath();
+    g.moveTo(0, topY);
+    g.bezierCurveTo(-topR, topY, -baseR*0.95, -h*0.15, -baseR, baseY*0.35);
+    g.bezierCurveTo(-baseR*1.02, baseY*0.72, -baseR*0.55, baseY, 0, baseY);
+    g.bezierCurveTo(baseR*0.55, baseY, baseR*1.02, baseY*0.72, baseR, baseY*0.35);
+    g.bezierCurveTo(baseR*0.95, -h*0.15, topR, topY, 0, topY);
+    g.closePath();
+
+    g.restore();
+  }
+
   // ======= PLAYER =======
   let FRAME_GROUND_Y = CONFIG.baseGroundY;
   class Player{
@@ -412,9 +435,12 @@
       this.scaleX = 1; this.scaleY = 1;
       this.bonkTimer = 0;
 
-      // NEW: face/blink state
-      this.blinkTimer = 0.4 + Math.random()*2.5; // seconds to next blink
-      this.blink = 0; // 0=open → 1=closed (decays toward 0)
+      // cute face blink
+      this.blinkTimer = 0.4 + Math.random()*2.5;
+      this.blink = 0;
+
+      // (NEW) landing pulse
+      this.landPulse = 0;   // 0..1 quick spread on land
     }
     get rect(){ return {x:this.x, y:this.y, w:this.w, h:this.h}; }
     update(dt){
@@ -441,15 +467,18 @@
       }else if(!input.up && this.vy < 0 && !this.jumpCutApplied){
         this.vy *= CONFIG.player.jumpCutFactor; this.jumpCutApplied = true;
       }
-
       if(!this.onGround && !this.onPlatform && input.crouch){ g *= CONFIG.player.fastFallMultiplier; }
 
+      // integrate
       this.vy += g * dt; this.y += this.vy * dt;
 
       if(this.y < CONFIG.topClampY){ this.y = CONFIG.topClampY; if(this.vy < 0) this.vy = 0; }
 
+      // landing detection
+      const wasAir = !(this.onGround || this.onPlatform);
       if(FRAME_GROUND_Y !== null && this.y + this.h >= FRAME_GROUND_Y){
         this.y = FRAME_GROUND_Y - this.h; this.vy = 0;
+        if(wasAir) this.landPulse = 1; // (NEW) trigger cute spread
         if(!this.onGround && !this.onPlatform) this.onGround=true;
         this.airTime = 0; this.jumpCutApplied = false;
       }else{
@@ -462,6 +491,7 @@
         this.coyoteMs -= dt*1000; if(this.coyoteMs<0) this.coyoteMs=0;
       }
 
+      // squash & stretch targets
       let tx=1, ty=1;
       if(this.crouched){ tx=1.15; ty=0.75; }
       else {
@@ -474,82 +504,107 @@
       this.scaleX += (tx - this.scaleX) * k;
       this.scaleY += (ty - this.scaleY) * k;
 
-      // NEW: blink timing (quick close, auto reopen)
+      // decay landing pulse
+      this.landPulse = Math.max(0, this.landPulse - dt*6);
+
+      // blink timing
       this.blinkTimer -= dt;
       if(this.blinkTimer <= 0){ this.blinkTimer = 2.0 + Math.random()*3.0; this.blink = 1; }
       if(this.blink > 0){ this.blink = Math.max(0, this.blink - dt*8); }
     }
 
-    // NEW: glossy slime rendering with face, highlight, soft shadow
+    // ======= (NEW) glossy sticker-slime rendering =======
     draw(g, t=0){
+      const w=this.w, h=this.h;
       const bodyColor = getComputedStyle(document.documentElement)
-        .getPropertyValue('--player').trim() || '#4be4c9';
-      const w = this.w, h = this.h;
+          .getPropertyValue('--player').trim() || '#6EE7B7';
+
+      // ground shadow / puddle (widens on land & crouch)
+      const baseSpread = (this.onGround ? 0.22 : 0.06) + this.landPulse*0.35 + (this.crouched?0.15:0);
+      const shadowW = w*(0.9 + baseSpread*1.2);
+      g.globalAlpha = 0.25;
+      g.beginPath(); g.ellipse(this.x + w/2, this.y + h + 8, shadowW, 10, 0, 0, Math.PI*2);
+      g.fillStyle = '#000'; g.fill(); g.globalAlpha = 1;
+
+      // small side shadow “feet”
+      if(this.onGround){
+        g.save();
+        g.translate(this.x + w/2, this.y + h + 2);
+        g.fillStyle = '#00000012';
+        g.beginPath(); g.ellipse(-shadowW*0.55, 0, 10, 4, 0, 0, Math.PI*2); g.fill();
+        g.beginPath(); g.ellipse( shadowW*0.55, 0, 10, 4, 0, 0, Math.PI*2); g.fill();
+        g.restore();
+      }
 
       g.save();
+      g.translate(this.x + w/2, this.y + h*0.60);
 
-      // soft ground shadow
-      const shadowStretch = 1 + Math.min(0.6, Math.abs(this.vy)*0.0012);
-      g.globalAlpha = 0.22;
-      g.beginPath();
-      g.ellipse(this.x + w/2, this.y + h + 6, (w*0.65)*shadowStretch, 8, 0, 0, Math.PI*2);
-      g.fillStyle = '#000';
-      g.fill();
+      const tilt = clamp(this.vy*0.0006, -0.18, 0.18);
+
+      // white sticker border
+      g.save();
+      blobPath(g, w*1.10, h*1.12, baseSpread, tilt);
+      g.shadowColor = '#0009'; g.shadowBlur = 10; g.shadowOffsetY = 2;
+      g.fillStyle = '#fff'; g.fill();
+      g.restore();
+
+      // inner jelly
+      blobPath(g, w, h, baseSpread, tilt);
+      const grad = g.createRadialGradient(-w*0.18, -h*0.55, 6, 0, -h*0.10, Math.max(w,h));
+      grad.addColorStop(0, '#ffffffa0');
+      grad.addColorStop(0.20, '#ffffff33');
+      grad.addColorStop(0.58, bodyColor);
+      grad.addColorStop(1,   '#3aa39a');
+      g.fillStyle = grad; g.fill();
+
+      // inner rim
+      g.lineWidth = 2; g.strokeStyle = '#00000025'; g.stroke();
+
+      // glossy highlights
+      g.fillStyle = '#fff';
+      g.globalAlpha = 0.9;
+      g.beginPath(); g.ellipse(-w*0.28, -h*0.40, 14, 10, 0.25, 0, Math.PI*2); g.fill();
+      g.globalAlpha = 0.7;
+      g.beginPath(); g.ellipse(-w*0.10, -h*0.50, 8, 6, -0.5, 0, Math.PI*2); g.fill();
       g.globalAlpha = 1;
 
-      // body (squash & stretch via scale)
-      g.translate(this.x + w/2, this.y + h);
-      g.scale(this.scaleX, this.scaleY);
+      // face (kawaii)
+      const bob = Math.sin(t*8 + this.y*0.02)*0.6;
+      const eyeW=8, eyeHOpen=10, eyeH=Math.max(2, eyeHOpen*(1-this.blink));
+      const eyeY=-h*0.10 + bob, eyeLX=-w*0.20, eyeRX=w*0.20;
 
-      roundRectPath(g, -w/2, -h, w, h, 12);
-
-      // gel gradient
-      const grd = g.createRadialGradient(-w*0.18, -h*0.65, 6, 0, -h*0.25, Math.max(w, h));
-      grd.addColorStop(0, '#ffffff88');
-      grd.addColorStop(0.15, '#ffffff33');
-      grd.addColorStop(0.6, bodyColor);
-      grd.addColorStop(1, '#2aa89a');
-      g.fillStyle = grd;
-      g.fill();
-
-      // rim
-      g.lineWidth = 2;
-      g.strokeStyle = '#00000025';
-      g.stroke();
-
-      // specular swoosh
-      g.beginPath();
-      g.moveTo(-w*0.25, -h*0.78);
-      g.quadraticCurveTo(-w*0.05, -h*0.95,  w*0.15, -h*0.80);
-      g.quadraticCurveTo(-w*0.05, -h*0.85, -w*0.25, -h*0.78);
-      g.closePath();
-      g.fillStyle = '#ffffff55';
-      g.fill();
-
-      // face
-      const bob = Math.sin(t*8 + this.y*0.02)*0.5;
-      const eyeW = 6, eyeHOpen = 10, eyeH = Math.max(2, eyeHOpen*(1-this.blink));
-      const eyeY  = -h*0.58 + bob;
-      const eyeLX = -w*0.16, eyeRX =  w*0.16;
-
-      g.fillStyle = '#0b2e2a';
+      g.fillStyle = '#0a2b28';
       g.beginPath(); g.ellipse(eyeLX, eyeY, eyeW, eyeH, 0, 0, Math.PI*2); g.fill();
       g.beginPath(); g.ellipse(eyeRX, eyeY, eyeW, eyeH, 0, 0, Math.PI*2); g.fill();
-
       if(this.blink < 0.7){
-        g.fillStyle = '#ffffff88';
+        g.fillStyle = '#ffffffcc';
         g.beginPath(); g.ellipse(eyeLX-2, eyeY-3, 2, 3, 0, 0, Math.PI*2); g.fill();
         g.beginPath(); g.ellipse(eyeRX-2, eyeY-3, 2, 3, 0, 0, Math.PI*2); g.fill();
       }
 
-      const mW = 14 + Math.min(10, Math.abs(this.vy)*0.02);
-      const mY = -h*0.43 + bob*0.6;
-      g.strokeStyle = '#0b2e2a';
-      g.lineWidth = 2;
+      // blush
+      g.globalAlpha = 0.35; g.fillStyle = '#ff7096';
+      g.beginPath(); g.ellipse(-w*0.30, eyeY+12, 10, 6, 0, 0, Math.PI*2); g.fill();
+      g.beginPath(); g.ellipse( w*0.30, eyeY+12, 10, 6, 0, 0, Math.PI*2); g.fill();
+      g.globalAlpha = 1;
+
+      // smile
+      g.strokeStyle = '#0a2b28'; g.lineWidth=2;
       g.beginPath();
-      g.moveTo(-mW/2, mY);
-      g.quadraticCurveTo(0, mY + 4, mW/2, mY);
+      const my = eyeY + 18;
+      g.moveTo(-12, my);
+      g.quadraticCurveTo(0, my+4, 12, my);
       g.stroke();
+
+      // side droplets on strong landing
+      if(this.onGround && this.landPulse > 0.05){
+        const k = this.landPulse;
+        g.fillStyle = bodyColor;
+        g.globalAlpha = 0.85*k;
+        g.beginPath(); g.ellipse(-w*(0.52+0.15*k), h*0.35, 6+6*k, 4+2*k, 0, 0, Math.PI*2); g.fill();
+        g.beginPath(); g.ellipse( w*(0.52+0.15*k), h*0.35, 6+6*k, 4+2*k, 0, 0, Math.PI*2); g.fill();
+        g.globalAlpha = 1;
+      }
 
       g.restore();
     }
@@ -825,7 +880,7 @@
       for(const pf of this.platforms) pf.draw(g);
       for(const o of this.obstacles) o.draw(g);
 
-      // Pass time so the slime face can gently bob
+      // time → gentle bob on face
       this.player.draw(g, this.time);
 
       if(this.state==='playing' && this.time < 1.2){
@@ -877,7 +932,6 @@
       else if(world.state==='paused') world.resume();
       input.pause = false;
     }
-
     if(input.restart){
       input.restart=false;
       if(world.state==='menu' || world.state==='credits'){ world.start(); }
