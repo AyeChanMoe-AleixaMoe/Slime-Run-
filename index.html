@@ -175,6 +175,7 @@
   const hiPill = document.getElementById('hiPill');
   const speedPill = document.getElementById('speedPill');
   const overlay = document.getElementById('overlay');
+  function byId(id){ return document.getElementById(id); }
 
   const HI_KEY = 'endlessRunnerHiScoreV1';
   let hiScore = Number(localStorage.getItem(HI_KEY) || 0);
@@ -410,6 +411,10 @@
       this.airTime = 0; this.jumpCutApplied = false;
       this.scaleX = 1; this.scaleY = 1;
       this.bonkTimer = 0;
+
+      // NEW: face/blink state
+      this.blinkTimer = 0.4 + Math.random()*2.5; // seconds to next blink
+      this.blink = 0; // 0=open → 1=closed (decays toward 0)
     }
     get rect(){ return {x:this.x, y:this.y, w:this.w, h:this.h}; }
     update(dt){
@@ -468,16 +473,84 @@
       const k = Math.min(1, CONFIG.player.slimeLerpRate * dt);
       this.scaleX += (tx - this.scaleX) * k;
       this.scaleY += (ty - this.scaleY) * k;
+
+      // NEW: blink timing (quick close, auto reopen)
+      this.blinkTimer -= dt;
+      if(this.blinkTimer <= 0){ this.blinkTimer = 2.0 + Math.random()*3.0; this.blink = 1; }
+      if(this.blink > 0){ this.blink = Math.max(0, this.blink - dt*8); }
     }
-    draw(g){
-      g.save();
-      g.translate(this.x + this.w/2, this.y + this.h);
-      g.scale(this.scaleX, this.scaleY);
+
+    // NEW: glossy slime rendering with face, highlight, soft shadow
+    draw(g, t=0){
+      const bodyColor = getComputedStyle(document.documentElement)
+        .getPropertyValue('--player').trim() || '#4be4c9';
       const w = this.w, h = this.h;
-      roundRectPath(g, -w/2, -h, w, h, 10);
-      g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--player').trim() || '#4be4c9';
+
+      g.save();
+
+      // soft ground shadow
+      const shadowStretch = 1 + Math.min(0.6, Math.abs(this.vy)*0.0012);
+      g.globalAlpha = 0.22;
+      g.beginPath();
+      g.ellipse(this.x + w/2, this.y + h + 6, (w*0.65)*shadowStretch, 8, 0, 0, Math.PI*2);
+      g.fillStyle = '#000';
       g.fill();
-      g.fillStyle = 'rgba(0,0,0,.25)'; g.fillRect(w/2 - 12, -h + 8, 6, 8);
+      g.globalAlpha = 1;
+
+      // body (squash & stretch via scale)
+      g.translate(this.x + w/2, this.y + h);
+      g.scale(this.scaleX, this.scaleY);
+
+      roundRectPath(g, -w/2, -h, w, h, 12);
+
+      // gel gradient
+      const grd = g.createRadialGradient(-w*0.18, -h*0.65, 6, 0, -h*0.25, Math.max(w, h));
+      grd.addColorStop(0, '#ffffff88');
+      grd.addColorStop(0.15, '#ffffff33');
+      grd.addColorStop(0.6, bodyColor);
+      grd.addColorStop(1, '#2aa89a');
+      g.fillStyle = grd;
+      g.fill();
+
+      // rim
+      g.lineWidth = 2;
+      g.strokeStyle = '#00000025';
+      g.stroke();
+
+      // specular swoosh
+      g.beginPath();
+      g.moveTo(-w*0.25, -h*0.78);
+      g.quadraticCurveTo(-w*0.05, -h*0.95,  w*0.15, -h*0.80);
+      g.quadraticCurveTo(-w*0.05, -h*0.85, -w*0.25, -h*0.78);
+      g.closePath();
+      g.fillStyle = '#ffffff55';
+      g.fill();
+
+      // face
+      const bob = Math.sin(t*8 + this.y*0.02)*0.5;
+      const eyeW = 6, eyeHOpen = 10, eyeH = Math.max(2, eyeHOpen*(1-this.blink));
+      const eyeY  = -h*0.58 + bob;
+      const eyeLX = -w*0.16, eyeRX =  w*0.16;
+
+      g.fillStyle = '#0b2e2a';
+      g.beginPath(); g.ellipse(eyeLX, eyeY, eyeW, eyeH, 0, 0, Math.PI*2); g.fill();
+      g.beginPath(); g.ellipse(eyeRX, eyeY, eyeW, eyeH, 0, 0, Math.PI*2); g.fill();
+
+      if(this.blink < 0.7){
+        g.fillStyle = '#ffffff88';
+        g.beginPath(); g.ellipse(eyeLX-2, eyeY-3, 2, 3, 0, 0, Math.PI*2); g.fill();
+        g.beginPath(); g.ellipse(eyeRX-2, eyeY-3, 2, 3, 0, 0, Math.PI*2); g.fill();
+      }
+
+      const mW = 14 + Math.min(10, Math.abs(this.vy)*0.02);
+      const mY = -h*0.43 + bob*0.6;
+      g.strokeStyle = '#0b2e2a';
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(-mW/2, mY);
+      g.quadraticCurveTo(0, mY + 4, mW/2, mY);
+      g.stroke();
+
       g.restore();
     }
   }
@@ -486,8 +559,8 @@
   class World{
     constructor(){
       this.reset();
-      this.state = 'menu';          // 'menu' | 'playing' | 'paused' | 'dead' | 'credits'
-      showMenu(this);               // <-- pass instance, avoid undefined global
+      this.state = 'menu';
+      showMenu(this);
     }
     reset(){
       this.player = new Player();
@@ -751,7 +824,9 @@
       for(const seg of this.terrain) seg.draw(g);
       for(const pf of this.platforms) pf.draw(g);
       for(const o of this.obstacles) o.draw(g);
-      this.player.draw(g);
+
+      // Pass time so the slime face can gently bob
+      this.player.draw(g, this.time);
 
       if(this.state==='playing' && this.time < 1.2){
         g.globalAlpha = 1 - this.time/1.2;
@@ -763,7 +838,6 @@
   }
 
   // ------- Overlay helpers & Menu/Credits -------
-  function byId(id){ return document.getElementById(id); }
   function setOverlay(html, active=true){
     overlay.innerHTML = html;
     overlay.classList.toggle('active', !!active);
@@ -798,14 +872,12 @@
     const dt = clamp((now - last)/1000, 0, 1/20);
     last = now;
 
-    // Pause/Resume toggle always works
     if(input.pause){
       if(world.state==='playing') world.pause();
       else if(world.state==='paused') world.resume();
       input.pause = false;
     }
 
-    // Restart key
     if(input.restart){
       input.restart=false;
       if(world.state==='menu' || world.state==='credits'){ world.start(); }
@@ -818,8 +890,6 @@
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
-
-  function byId(id){ return document.getElementById(id); }
 
   // Click-to-focus for keyboard on some browsers
   canvas.addEventListener('click', ()=> canvas.focus && canvas.focus());
