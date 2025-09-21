@@ -515,99 +515,76 @@
 
     // ======= (NEW) glossy sticker-slime rendering =======
     draw(g, t=0){
-      const w=this.w, h=this.h;
-      const bodyColor = getComputedStyle(document.documentElement)
-          .getPropertyValue('--player').trim() || '#6EE7B7';
+  const w=this.w, h=this.h;
+  const bodyColor = getComputedStyle(document.documentElement)
+      .getPropertyValue('--player').trim() || '#00e0e0';
 
-      // ground shadow / puddle (widens on land & crouch)
-      const baseSpread = (this.onGround ? 0.22 : 0.06) + this.landPulse*0.35 + (this.crouched?0.15:0);
-      const shadowW = w*(0.9 + baseSpread*1.2);
-      g.globalAlpha = 0.25;
-      g.beginPath(); g.ellipse(this.x + w/2, this.y + h + 8, shadowW, 10, 0, 0, Math.PI*2);
-      g.fillStyle = '#000'; g.fill(); g.globalAlpha = 1;
+  // ---- base shadow ----
+  const baseSpread = (this.onGround ? 0.25 : 0.1) + this.landPulse*0.35;
+  const shadowW = w*(1.0 + baseSpread*1.5);
+  g.globalAlpha = 0.25;
+  g.beginPath(); g.ellipse(this.x + w/2, this.y + h + 8, shadowW, 10, 0, 0, Math.PI*2);
+  g.fillStyle = '#000'; g.fill(); g.globalAlpha = 1;
 
-      // small side shadow “feet”
-      if(this.onGround){
-        g.save();
-        g.translate(this.x + w/2, this.y + h + 2);
-        g.fillStyle = '#00000012';
-        g.beginPath(); g.ellipse(-shadowW*0.55, 0, 10, 4, 0, 0, Math.PI*2); g.fill();
-        g.beginPath(); g.ellipse( shadowW*0.55, 0, 10, 4, 0, 0, Math.PI*2); g.fill();
-        g.restore();
-      }
+  // ---- slime body ----
+  g.save();
+  g.translate(this.x + w/2, this.y + h*0.6);
 
-      g.save();
-      g.translate(this.x + w/2, this.y + h*0.60);
+  g.beginPath();
+  g.moveTo(-w*0.55, h*0.35);
+  g.bezierCurveTo(-w*0.7, h*0.0, -w*0.5, -h*0.5, 0, -h*0.7);
+  g.bezierCurveTo(w*0.5, -h*0.5, w*0.7, h*0.0, w*0.55, h*0.35);
+  g.closePath();
 
-      const tilt = clamp(this.vy*0.0006, -0.18, 0.18);
+  // cyan jelly gradient
+  const grad = g.createLinearGradient(0,-h*0.7, 0,h*0.35);
+  grad.addColorStop(0, '#b9ffff');   // bright top
+  grad.addColorStop(0.3, bodyColor); // main cyan
+  grad.addColorStop(1, '#008c8c');   // darker bottom
+  g.fillStyle = grad; g.fill();
 
-      // white sticker border
-      g.save();
-      blobPath(g, w*1.10, h*1.12, baseSpread, tilt);
-      g.shadowColor = '#0009'; g.shadowBlur = 10; g.shadowOffsetY = 2;
-      g.fillStyle = '#fff'; g.fill();
-      g.restore();
+  // highlight gloss
+  g.fillStyle = '#fff';
+  g.globalAlpha = 0.7;
+  g.beginPath(); g.ellipse(-w*0.2, -h*0.45, 18, 12, 0.3, 0, Math.PI*2); g.fill();
+  g.globalAlpha = 0.9;
+  g.beginPath(); g.ellipse(-w*0.1, -h*0.55, 10, 6, -0.2, 0, Math.PI*2); g.fill();
+  g.globalAlpha = 1;
 
-      // inner jelly
-      blobPath(g, w, h, baseSpread, tilt);
-      const grad = g.createRadialGradient(-w*0.18, -h*0.55, 6, 0, -h*0.10, Math.max(w,h));
-      grad.addColorStop(0, '#ffffffa0');
-      grad.addColorStop(0.20, '#ffffff33');
-      grad.addColorStop(0.58, bodyColor);
-      grad.addColorStop(1,   '#3aa39a');
-      g.fillStyle = grad; g.fill();
+  // face
+  const eyeY=-h*0.1, eyeLX=-w*0.18, eyeRX=w*0.18;
+  g.fillStyle = '#0a2b28';
+  g.beginPath(); g.ellipse(eyeLX, eyeY, 9, 12, 0, 0, Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(eyeRX, eyeY, 9, 12, 0, 0, Math.PI*2); g.fill();
 
-      // inner rim
-      g.lineWidth = 2; g.strokeStyle = '#00000025'; g.stroke();
+  g.fillStyle = '#fff';
+  g.beginPath(); g.ellipse(eyeLX-2, eyeY-4, 3, 4, 0, 0, Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(eyeRX-2, eyeY-4, 3, 4, 0, 0, Math.PI*2); g.fill();
 
-      // glossy highlights
-      g.fillStyle = '#fff';
-      g.globalAlpha = 0.9;
-      g.beginPath(); g.ellipse(-w*0.28, -h*0.40, 14, 10, 0.25, 0, Math.PI*2); g.fill();
-      g.globalAlpha = 0.7;
-      g.beginPath(); g.ellipse(-w*0.10, -h*0.50, 8, 6, -0.5, 0, Math.PI*2); g.fill();
-      g.globalAlpha = 1;
+  // blush
+  g.fillStyle = '#ff80a5';
+  g.globalAlpha = 0.35;
+  g.beginPath(); g.ellipse(-w*0.32, eyeY+14, 12, 6, 0, 0, Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse( w*0.32, eyeY+14, 12, 6, 0, 0, Math.PI*2); g.fill();
+  g.globalAlpha = 1;
 
-      // face (kawaii)
-      const bob = Math.sin(t*8 + this.y*0.02)*0.6;
-      const eyeW=8, eyeHOpen=10, eyeH=Math.max(2, eyeHOpen*(1-this.blink));
-      const eyeY=-h*0.10 + bob, eyeLX=-w*0.20, eyeRX=w*0.20;
+  // smile
+  g.strokeStyle = '#0a2b28'; g.lineWidth=2;
+  g.beginPath(); g.moveTo(-10, eyeY+22);
+  g.quadraticCurveTo(0, eyeY+28, 10, eyeY+22); g.stroke();
 
-      g.fillStyle = '#0a2b28';
-      g.beginPath(); g.ellipse(eyeLX, eyeY, eyeW, eyeH, 0, 0, Math.PI*2); g.fill();
-      g.beginPath(); g.ellipse(eyeRX, eyeY, eyeW, eyeH, 0, 0, Math.PI*2); g.fill();
-      if(this.blink < 0.7){
-        g.fillStyle = '#ffffffcc';
-        g.beginPath(); g.ellipse(eyeLX-2, eyeY-3, 2, 3, 0, 0, Math.PI*2); g.fill();
-        g.beginPath(); g.ellipse(eyeRX-2, eyeY-3, 2, 3, 0, 0, Math.PI*2); g.fill();
-      }
+  // side droplets
+  if(this.onGround && this.landPulse>0.05){
+    const k=this.landPulse;
+    g.fillStyle = bodyColor; g.globalAlpha=0.8*k;
+    g.beginPath(); g.ellipse(-w*0.6, h*0.35, 10+6*k, 6+2*k, 0, 0, Math.PI*2); g.fill();
+    g.beginPath(); g.ellipse( w*0.6, h*0.35, 10+6*k, 6+2*k, 0, 0, Math.PI*2); g.fill();
+    g.globalAlpha=1;
+  }
 
-      // blush
-      g.globalAlpha = 0.35; g.fillStyle = '#ff7096';
-      g.beginPath(); g.ellipse(-w*0.30, eyeY+12, 10, 6, 0, 0, Math.PI*2); g.fill();
-      g.beginPath(); g.ellipse( w*0.30, eyeY+12, 10, 6, 0, 0, Math.PI*2); g.fill();
-      g.globalAlpha = 1;
+  g.restore();
+}
 
-      // smile
-      g.strokeStyle = '#0a2b28'; g.lineWidth=2;
-      g.beginPath();
-      const my = eyeY + 18;
-      g.moveTo(-12, my);
-      g.quadraticCurveTo(0, my+4, 12, my);
-      g.stroke();
-
-      // side droplets on strong landing
-      if(this.onGround && this.landPulse > 0.05){
-        const k = this.landPulse;
-        g.fillStyle = bodyColor;
-        g.globalAlpha = 0.85*k;
-        g.beginPath(); g.ellipse(-w*(0.52+0.15*k), h*0.35, 6+6*k, 4+2*k, 0, 0, Math.PI*2); g.fill();
-        g.beginPath(); g.ellipse( w*(0.52+0.15*k), h*0.35, 6+6*k, 4+2*k, 0, 0, Math.PI*2); g.fill();
-        g.globalAlpha = 1;
-      }
-
-      g.restore();
-    }
   }
 
   // ======= WORLD =======
